@@ -1,7 +1,18 @@
 """FFmpeg — Edición y procesamiento de vídeo"""
 import ffmpeg
+import shutil
+import urllib.request
 from pathlib import Path
 from loguru import logger
+
+
+def hex_to_ass_color(hex_color: str) -> str:
+    """Convierte color hex (#RRGGBB) a formato ASS (&HBBGGRR&)"""
+    hex_color = hex_color.lstrip("#").upper()
+    if len(hex_color) == 6:
+        r, g, b = hex_color[0:2], hex_color[2:4], hex_color[4:6]
+        return f"&H{b}{g}{r}&"
+    return "&HFFFFFF&"
 
 
 def extract_audio(video_path: str | Path, output_path: str | Path) -> Path:
@@ -80,17 +91,23 @@ def burn_subtitles(
     srt_path: str | Path,
     output_path: str | Path,
     font_size: int = 28,
-    font_color: str = "white"
+    font_color: str = "white",
+    position: str = "bottom"
 ) -> Path:
     """Quema subtítulos en el vídeo (no editables, parte del frame)"""
     video_path = Path(video_path)
     srt_path = Path(srt_path)
     output_path = Path(output_path)
 
+    position_map = {"bottom": 2, "top": 8, "center": 5}
+    alignment = position_map.get(position.lower(), 2)
+
+    ass_color = hex_to_ass_color(font_color)
+
     style = (
         f"FontName=Inter,FontSize={font_size},"
-        f"PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,"
-        f"BorderStyle=3,Outline=2,Shadow=1,Alignment=2"
+        f"PrimaryColour={ass_color},OutlineColour=&H000000&,"
+        f"BorderStyle=3,Outline=2,Shadow=1,Alignment={alignment}"
     )
 
     (
@@ -186,3 +203,135 @@ def transcription_to_srt(segments: list[dict]) -> str:
         srt_lines.append(seg["text"].strip())
         srt_lines.append("")
     return "\n".join(srt_lines)
+
+
+def apply_color_grading(
+    video_path: str | Path,
+    output_path: str | Path,
+    grading_style: str = "neutral"
+) -> Path:
+    """Aplica color grading vía filtro eq de FFmpeg"""
+    video_path = Path(video_path)
+    output_path = Path(output_path)
+
+    styles = {
+        "cinematico": "eq=contrast=1.2:saturation=0.8:brightness=-0.05",
+        "vibrante": "eq=contrast=1.1:saturation=1.4",
+        "minimalista": "eq=saturation=0.7:brightness=0.05",
+        "oscuro": "eq=contrast=1.3:brightness=-0.1:saturation=0.9"
+    }
+
+    vf = styles.get(grading_style.lower(), "")
+    logger.info(f"Aplicando color grading '{grading_style}' a {video_path.name}")
+
+    if not vf:
+        shutil.copy(str(video_path), str(output_path))
+        return output_path
+
+    (
+        ffmpeg
+        .input(str(video_path))
+        .output(
+            str(output_path),
+            vf=vf,
+            vcodec="libx264",
+            acodec="aac",
+            preset="medium",
+            crf=18
+        )
+        .overwrite_output()
+        .run(quiet=True)
+    )
+    return output_path
+
+
+def overlay_image_at_timestamp(
+    video_path: str | Path,
+    image_path: str | Path,
+    output_path: str | Path,
+    start_time: float,
+    duration: float,
+    fade_duration: float = 0.3
+) -> Path:
+    """Superpone imagen en timestamp específico con fade in/out"""
+    video_path = Path(video_path)
+    image_path = Path(image_path)
+    output_path = Path(output_path)
+
+    logger.info(f"Overlay image @ {start_time}s duration={duration}s de {image_path.name}")
+
+    end_time = start_time + duration
+    enable = f"between(t,{start_time},{end_time})"
+
+    (
+        ffmpeg
+        .input(str(video_path))
+        .input(str(image_path))
+        .filter(
+            "overlay",
+            x="(W-w)/2",
+            y="(H-h)/2",
+            enable=enable
+        )
+        .output(
+            str(output_path),
+            vcodec="libx264",
+            acodec="aac",
+            preset="medium",
+            crf=18
+        )
+        .overwrite_output()
+        .run(quiet=True)
+    )
+    return output_path
+
+
+def add_text_overlay(
+    video_path: str | Path,
+    output_path: str | Path,
+    text: str,
+    timestamp: float,
+    duration: float,
+    font_size: int = 48,
+    text_color: str = "white",
+    fade_duration: float = 0.3
+) -> Path:
+    """Añade texto animado con fade in/out en timestamp específico"""
+    video_path = Path(video_path)
+    output_path = Path(output_path)
+
+    logger.info(f"Añadiendo texto en {timestamp}s: {text[:30]}...")
+
+    start = timestamp
+    end = timestamp + duration
+    fade_end = min(start + fade_duration, end)
+
+    ass_color = hex_to_ass_color(text_color)
+    fontcolor_rgb = f"fontcolor={text_color}:fontsize={font_size}"
+
+    enable_fade = f"between(t,{start},{fade_end})*({fade_duration}/(t-{start}+0.0001)) + between(t,{fade_end},{end})"
+
+    text_escaped = text.replace("'", "\\'")
+
+    (
+        ffmpeg
+        .input(str(video_path))
+        .drawtext(
+            text=text_escaped,
+            fontsize=font_size,
+            fontcolor=text_color,
+            x="(w-text_w)/2",
+            y="(h-text_h)/2",
+            enable=enable_fade
+        )
+        .output(
+            str(output_path),
+            vcodec="libx264",
+            acodec="aac",
+            preset="medium",
+            crf=18
+        )
+        .overwrite_output()
+        .run(quiet=True)
+    )
+    return output_path
