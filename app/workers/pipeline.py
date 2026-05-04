@@ -99,39 +99,38 @@ def process_video_job(
                 logger.warning("No se pudo parsear Production Plan JSON")
             update_progress(job_id, 80)
 
-            # Paso 8: Captions virales palabra-por-palabra (80% → 92%)
+            # Paso 8: Captions + color grading en UN SOLO encode (80% → 88%)
             words = (transcription or {}).get("words") or []
             sub_config = plan_data.get("subtitles", {})
             highlight_color = sub_config.get("color", "#FFFF00")
+            grading_style = plan_data.get("color_grading", "neutral")
 
             info = video.get_video_info(source_video)
             v_w = (info.get("video") or {}).get("width") or 1080
             v_h = (info.get("video") or {}).get("height") or 1920
 
-            with_subs = workdir / "with_subs.mp4"
+            graded_path = workdir / "graded.mp4"
             if words:
                 ass_path = workdir / "viral_captions.ass"
                 video.generate_viral_captions_ass(
-                    words,
-                    ass_path,
-                    video_width=v_w,
-                    video_height=v_h,
+                    words, ass_path,
+                    video_width=v_w, video_height=v_h,
                     highlight_color=highlight_color
                 )
-                video.burn_ass_subtitles(source_video, ass_path, with_subs)
+                video.apply_color_grading_and_subtitles(
+                    source_video, ass_path, graded_path,
+                    grading_style=grading_style
+                )
             else:
                 segments = (transcription or {}).get("segments") or []
                 srt_content = video.transcription_to_srt(segments)
                 srt_path = workdir / "subs.srt"
                 srt_path.write_text(srt_content, encoding="utf-8")
+                with_subs = workdir / "with_subs.mp4"
                 video.burn_subtitles(source_video, srt_path, with_subs)
+                video.apply_color_grading(with_subs, graded_path, grading_style=grading_style)
 
-            update_progress(job_id, 92)
-
-            # Paso 8.5: Aplicar color grading desde Production Plan
-            grading_style = plan_data.get("color_grading", "neutral")
-            graded_path = workdir / "graded.mp4"
-            video.apply_color_grading(with_subs, graded_path, grading_style=grading_style)
+            update_progress(job_id, 88)
 
             # Paso 8.6: Aplicar B-roll con DALL-E
             broll_list = plan_data.get("broll", [])[:3]

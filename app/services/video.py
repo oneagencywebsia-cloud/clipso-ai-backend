@@ -1,9 +1,18 @@
 """FFmpeg — Edición y procesamiento de vídeo"""
 import ffmpeg
 import shutil
-import urllib.request
+import subprocess
+import re
 from pathlib import Path
 from loguru import logger
+
+# Preset para encodes intermedios (archivos temporales)
+_TMP_PRESET = "ultrafast"
+_TMP_CRF = 26
+
+# Preset solo para el render final (output del usuario)
+_FINAL_PRESET = "fast"
+_FINAL_CRF = 20
 
 
 def hex_to_ass_color(hex_color: str) -> str:
@@ -19,9 +28,7 @@ def extract_audio(video_path: str | Path, output_path: str | Path) -> Path:
     """Extrae el audio de un vídeo (para Whisper)"""
     video_path = Path(video_path)
     output_path = Path(output_path)
-
     logger.info(f"Extrayendo audio: {video_path.name}")
-
     (
         ffmpeg
         .input(str(video_path))
@@ -42,10 +49,8 @@ def extract_frames(
     video_path = Path(video_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
     pattern = output_dir / "frame_%04d.jpg"
     logger.info(f"Extrayendo frames @ {fps}fps de {video_path.name}")
-
     (
         ffmpeg
         .input(str(video_path))
@@ -53,7 +58,6 @@ def extract_frames(
         .overwrite_output()
         .run(quiet=True)
     )
-
     return sorted(output_dir.glob("frame_*.jpg"))
 
 
@@ -61,14 +65,8 @@ def get_video_info(video_path: str | Path) -> dict:
     """Devuelve metadata del vídeo (duración, resolución, fps, codec)"""
     video_path = Path(video_path)
     probe = ffmpeg.probe(str(video_path))
-
-    video_stream = next(
-        (s for s in probe["streams"] if s["codec_type"] == "video"), None
-    )
-    audio_stream = next(
-        (s for s in probe["streams"] if s["codec_type"] == "audio"), None
-    )
-
+    video_stream = next((s for s in probe["streams"] if s["codec_type"] == "video"), None)
+    audio_stream = next((s for s in probe["streams"] if s["codec_type"] == "audio"), None)
     return {
         "duration": float(probe["format"]["duration"]),
         "size_bytes": int(probe["format"]["size"]),
@@ -94,22 +92,18 @@ def burn_subtitles(
     font_color: str = "white",
     position: str = "bottom"
 ) -> Path:
-    """Quema subtítulos en el vídeo (no editables, parte del frame)"""
+    """Quema subtítulos SRT en el vídeo"""
     video_path = Path(video_path)
     srt_path = Path(srt_path)
     output_path = Path(output_path)
-
     position_map = {"bottom": 2, "top": 8, "center": 5}
     alignment = position_map.get(position.lower(), 2)
-
     ass_color = hex_to_ass_color(font_color)
-
     style = (
         f"FontName=Inter,FontSize={font_size},"
         f"PrimaryColour={ass_color},OutlineColour=&H000000&,"
         f"BorderStyle=3,Outline=2,Shadow=1,Alignment={alignment}"
     )
-
     (
         ffmpeg
         .input(str(video_path))
@@ -118,8 +112,8 @@ def burn_subtitles(
             vf=f"subtitles={srt_path}:force_style='{style}'",
             vcodec="libx264",
             acodec="copy",
-            preset="medium",
-            crf=20
+            preset=_TMP_PRESET,
+            crf=_TMP_CRF
         )
         .overwrite_output()
         .run(quiet=True)
@@ -132,7 +126,7 @@ def upscale_to_resolution(
     output_path: str | Path,
     target: str = "1080p"
 ) -> Path:
-    """Re-renderiza preservando el aspect ratio original (vertical/horizontal)"""
+    """Render final — preserva aspect ratio, usa preset de calidad"""
     target_heights = {"720p": 720, "1080p": 1080, "4k": 2160}
     target_h = target_heights.get(target.lower(), 1080)
 
@@ -143,7 +137,6 @@ def upscale_to_resolution(
     is_vertical = src_h > src_w
 
     if is_vertical:
-        # Vertical: la dimensión menor es width, la mayor es height
         new_h = target_h * 16 // 9 if src_h / src_w >= 16 / 9 else target_h
         new_w = target_h
         scale_filter = f"scale={new_w}:-2:flags=lanczos"
@@ -158,8 +151,8 @@ def upscale_to_resolution(
             vf=scale_filter,
             vcodec="libx264",
             acodec="aac",
-            preset="medium",
-            crf=18
+            preset=_FINAL_PRESET,
+            crf=_FINAL_CRF
         )
         .overwrite_output()
         .run(quiet=True)
@@ -170,17 +163,16 @@ def upscale_to_resolution(
 def concat_videos(video_paths: list[str | Path], output_path: str | Path) -> Path:
     """Une múltiples vídeos en uno solo"""
     output_path = Path(output_path)
-
     inputs = [ffmpeg.input(str(p)) for p in video_paths]
     streams = []
     for inp in inputs:
         streams.append(inp.video)
         streams.append(inp.audio)
-
     joined = ffmpeg.concat(*streams, v=1, a=1).node
     (
         ffmpeg
-        .output(joined[0], joined[1], str(output_path), vcodec="libx264", acodec="aac")
+        .output(joined[0], joined[1], str(output_path), vcodec="libx264", acodec="aac",
+                preset=_TMP_PRESET, crf=_TMP_CRF)
         .overwrite_output()
         .run(quiet=True)
     )
@@ -205,6 +197,50 @@ def transcription_to_srt(segments: list[dict]) -> str:
     return "\n".join(srt_lines)
 
 
+def apply_color_grading_and_subtitles(
+    video_path: str | Path,
+    ass_path: str | Path,
+    output_path: str | Path,
+    grading_style: str = "neutral"
+) -> Path:
+    """Combina color grading + captions ASS en un SOLO encode (evita pase extra)."""
+    video_path = Path(video_path)
+    ass_path = Path(ass_path)
+    output_path = Path(output_path)
+
+    grading_filters = {
+        "cinematico": "eq=contrast=1.2:saturation=0.8:brightness=-0.05",
+        "vibrante": "eq=contrast=1.1:saturation=1.4",
+        "minimalista": "eq=saturation=0.7:brightness=0.05",
+        "oscuro": "eq=contrast=1.3:brightness=-0.1:saturation=0.9",
+    }
+
+    ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
+    eq_filter = grading_filters.get(grading_style.lower(), "")
+
+    if eq_filter:
+        vf = f"{eq_filter},ass='{ass_escaped}'"
+    else:
+        vf = f"ass='{ass_escaped}'"
+
+    logger.info(f"Encode combinado: grading='{grading_style}' + captions ASS")
+    (
+        ffmpeg
+        .input(str(video_path))
+        .output(
+            str(output_path),
+            vf=vf,
+            vcodec="libx264",
+            acodec="copy",
+            preset=_TMP_PRESET,
+            crf=_TMP_CRF
+        )
+        .overwrite_output()
+        .run(quiet=True)
+    )
+    return output_path
+
+
 def apply_color_grading(
     video_path: str | Path,
     output_path: str | Path,
@@ -222,7 +258,7 @@ def apply_color_grading(
     }
 
     vf = styles.get(grading_style.lower(), "")
-    logger.info(f"Aplicando color grading '{grading_style}' a {video_path.name}")
+    logger.info(f"Aplicando color grading '{grading_style}'")
 
     if not vf:
         shutil.copy(str(video_path), str(output_path))
@@ -235,9 +271,9 @@ def apply_color_grading(
             str(output_path),
             vf=vf,
             vcodec="libx264",
-            acodec="aac",
-            preset="medium",
-            crf=18
+            acodec="copy",
+            preset=_TMP_PRESET,
+            crf=_TMP_CRF
         )
         .overwrite_output()
         .run(quiet=True)
@@ -257,28 +293,20 @@ def overlay_image_at_timestamp(
     video_path = Path(video_path)
     image_path = Path(image_path)
     output_path = Path(output_path)
-
-    logger.info(f"Overlay image @ {start_time}s duration={duration}s de {image_path.name}")
-
     end_time = start_time + duration
     enable = f"between(t,{start_time},{end_time})"
-
+    logger.info(f"Overlay image @ {start_time}s duration={duration}s")
     (
         ffmpeg
         .input(str(video_path))
         .input(str(image_path))
-        .filter(
-            "overlay",
-            x="(W-w)/2",
-            y="(H-h)/2",
-            enable=enable
-        )
+        .filter("overlay", x="(W-w)/2", y="(H-h)/2", enable=enable)
         .output(
             str(output_path),
             vcodec="libx264",
-            acodec="aac",
-            preset="medium",
-            crf=18
+            acodec="copy",
+            preset=_TMP_PRESET,
+            crf=_TMP_CRF
         )
         .overwrite_output()
         .run(quiet=True)
@@ -299,20 +327,12 @@ def add_text_overlay(
     """Añade texto animado con fade in/out en timestamp específico"""
     video_path = Path(video_path)
     output_path = Path(output_path)
-
-    logger.info(f"Añadiendo texto en {timestamp}s: {text[:30]}...")
-
     start = timestamp
     end = timestamp + duration
     fade_end = min(start + fade_duration, end)
-
-    ass_color = hex_to_ass_color(text_color)
-    fontcolor_rgb = f"fontcolor={text_color}:fontsize={font_size}"
-
     enable_fade = f"between(t,{start},{fade_end})*({fade_duration}/(t-{start}+0.0001)) + between(t,{fade_end},{end})"
-
     text_escaped = text.replace("'", "\\'")
-
+    logger.info(f"Añadiendo texto en {timestamp}s: {text[:30]}...")
     (
         ffmpeg
         .input(str(video_path))
@@ -327,9 +347,9 @@ def add_text_overlay(
         .output(
             str(output_path),
             vcodec="libx264",
-            acodec="aac",
-            preset="medium",
-            crf=18
+            acodec="copy",
+            preset=_TMP_PRESET,
+            crf=_TMP_CRF
         )
         .overwrite_output()
         .run(quiet=True)
@@ -346,15 +366,9 @@ def generate_viral_captions_ass(
     base_color: str = "#FFFFFF",
     font_size: int = 90
 ) -> Path:
-    """Genera archivo .ass con captions estilo viral (palabra por palabra, una palabra grande centrada).
-
-    Cada palabra es un evento independiente que aparece centrada en pantalla
-    durante su duración exacta (timestamps de Whisper).
-    """
+    """Genera archivo .ass con captions estilo viral (palabra por palabra centrada)."""
     output_path = Path(output_path)
-
     primary = hex_to_ass_color(highlight_color)
-    base = hex_to_ass_color(base_color)
 
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -365,7 +379,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Viral,Impact,{font_size},{primary},{base},&H000000&,&H80000000&,1,0,0,0,100,100,0,0,1,6,2,5,40,40,40,1
+Style: Viral,Impact,{font_size},{primary},&HFFFFFF&,&H000000&,&H80000000&,1,0,0,0,100,100,0,0,1,6,2,5,40,40,40,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -385,9 +399,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         if not text:
             continue
         text_escaped = text.replace("{", "(").replace("}", ")").replace(",", "")
-        events.append(
-            f"Dialogue: 0,{fmt_time(start)},{fmt_time(end)},Viral,,0,0,0,,{text_escaped}"
-        )
+        events.append(f"Dialogue: 0,{fmt_time(start)},{fmt_time(end)},Viral,,0,0,0,,{text_escaped}")
 
     output_path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
     logger.info(f"Generado ASS viral captions: {len(events)} palabras → {output_path.name}")
@@ -403,9 +415,7 @@ def burn_ass_subtitles(
     video_path = Path(video_path)
     ass_path = Path(ass_path)
     output_path = Path(output_path)
-
     ass_path_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
-
     (
         ffmpeg
         .input(str(video_path))
@@ -414,8 +424,8 @@ def burn_ass_subtitles(
             vf=f"ass='{ass_path_escaped}'",
             vcodec="libx264",
             acodec="copy",
-            preset="medium",
-            crf=20
+            preset=_TMP_PRESET,
+            crf=_TMP_CRF
         )
         .overwrite_output()
         .run(quiet=True)
@@ -429,17 +439,9 @@ def cut_silences(
     min_silence_duration: float = 0.7,
     silence_threshold_db: int = -30
 ) -> Path:
-    """Detecta y elimina silencios largos del video (jump cuts).
-
-    Usa silencedetect para encontrar silencios > min_silence_duration,
-    luego corta y concatena los segmentos hablados.
-    """
-    import subprocess
-    import re
-
+    """Detecta y elimina silencios largos del video (jump cuts)."""
     video_path = Path(video_path)
     output_path = Path(output_path)
-
     logger.info(f"Detectando silencios > {min_silence_duration}s en {video_path.name}")
 
     cmd = [
@@ -448,10 +450,10 @@ def cut_silences(
         "-f", "null", "-"
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
-    output = result.stderr
+    raw = result.stderr
 
-    silence_starts = [float(m) for m in re.findall(r"silence_start: ([\d.]+)", output)]
-    silence_ends = [float(m) for m in re.findall(r"silence_end: ([\d.]+)", output)]
+    silence_starts = [float(m) for m in re.findall(r"silence_start: ([\d.]+)", raw)]
+    silence_ends = [float(m) for m in re.findall(r"silence_end: ([\d.]+)", raw)]
 
     probe = ffmpeg.probe(str(video_path))
     total_duration = float(probe["format"]["duration"])
@@ -480,7 +482,6 @@ def cut_silences(
     logger.info(f"Cortando {len(silence_starts)} silencios, manteniendo {len(keep_segments)} segmentos")
 
     select_v = "+".join(f"between(t,{s},{e})" for s, e in keep_segments)
-    select_a = select_v
 
     (
         ffmpeg
@@ -488,11 +489,11 @@ def cut_silences(
         .output(
             str(output_path),
             vf=f"select='{select_v}',setpts=N/FRAME_RATE/TB",
-            af=f"aselect='{select_a}',asetpts=N/SR/TB",
+            af=f"aselect='{select_v}',asetpts=N/SR/TB",
             vcodec="libx264",
             acodec="aac",
-            preset="ultrafast",
-            crf=23
+            preset=_TMP_PRESET,
+            crf=_TMP_CRF
         )
         .overwrite_output()
         .run(quiet=True)
