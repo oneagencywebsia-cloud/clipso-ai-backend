@@ -31,14 +31,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"]
 )
 
-logger.info(f"✅ CORS configured for origins: {settings.cors_origins}")
+logger.info("✅ CORS configured — allowing all origins (DEBUG MODE)")
 
 
 @app.get("/", tags=["health"])
