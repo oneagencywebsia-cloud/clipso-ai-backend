@@ -115,20 +115,30 @@ def upscale_to_resolution(
     output_path: str | Path,
     target: str = "1080p"
 ) -> Path:
-    """Re-renderiza a una resolución específica (720p, 1080p, 4K)"""
-    presets = {
-        "720p": (1280, 720),
-        "1080p": (1920, 1080),
-        "4k": (3840, 2160)
-    }
-    width, height = presets.get(target.lower(), (1920, 1080))
+    """Re-renderiza preservando el aspect ratio original (vertical/horizontal)"""
+    target_heights = {"720p": 720, "1080p": 1080, "4k": 2160}
+    target_h = target_heights.get(target.lower(), 1080)
+
+    probe = ffmpeg.probe(str(video_path))
+    video_stream = next((s for s in probe["streams"] if s["codec_type"] == "video"), None)
+    src_w = int(video_stream["width"])
+    src_h = int(video_stream["height"])
+    is_vertical = src_h > src_w
+
+    if is_vertical:
+        # Vertical: la dimensión menor es width, la mayor es height
+        new_h = target_h * 16 // 9 if src_h / src_w >= 16 / 9 else target_h
+        new_w = target_h
+        scale_filter = f"scale={new_w}:-2:flags=lanczos"
+    else:
+        scale_filter = f"scale=-2:{target_h}:flags=lanczos"
 
     (
         ffmpeg
         .input(str(video_path))
         .output(
             str(output_path),
-            vf=f"scale={width}:{height}:flags=lanczos",
+            vf=scale_filter,
             vcodec="libx264",
             acodec="aac",
             preset="medium",
