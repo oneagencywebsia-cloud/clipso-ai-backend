@@ -44,17 +44,28 @@ def process_video_job(
 
             update_progress(job_id, 15)
 
-            # Paso 2: Concatenar si hay varios (15% → 20%)
+            # Paso 2: Concatenar si hay varios (15% → 18%)
             if len(input_files) > 1:
                 concat_path = workdir / "concat.mp4"
                 video.concat_videos(input_files, concat_path)
-                source_video = concat_path
+                raw_video = concat_path
             else:
-                source_video = input_files[0]
+                raw_video = input_files[0]
 
-            update_progress(job_id, 20)
+            update_progress(job_id, 18)
 
-            # Paso 3: Extraer audio para Whisper (20% → 30%)
+            # Paso 2.5: Jump cuts — eliminar silencios largos (18% → 22%)
+            cut_video = workdir / "cut.mp4"
+            try:
+                video.cut_silences(raw_video, cut_video, min_silence_duration=0.7)
+                source_video = cut_video
+            except Exception as e:
+                logger.warning(f"cut_silences falló, usando video original: {e}")
+                source_video = raw_video
+
+            update_progress(job_id, 22)
+
+            # Paso 3: Extraer audio para Whisper (22% → 30%)
             audio_path = workdir / "audio.mp3"
             video.extract_audio(source_video, audio_path)
             update_progress(job_id, 30)
@@ -88,26 +99,33 @@ def process_video_job(
                 logger.warning("No se pudo parsear Production Plan JSON")
             update_progress(job_id, 80)
 
-            # Paso 8: Aplicar edición — subtítulos quemados (80% → 92%)
-            segments = (transcription or {}).get("segments") or []
-            srt_content = video.transcription_to_srt(segments)
-            srt_path = workdir / "subs.srt"
-            srt_path.write_text(srt_content, encoding="utf-8")
-
+            # Paso 8: Captions virales palabra-por-palabra (80% → 92%)
+            words = (transcription or {}).get("words") or []
             sub_config = plan_data.get("subtitles", {})
-            sub_font_size = sub_config.get("font_size", 28)
-            sub_color = sub_config.get("color", "white")
-            sub_position = sub_config.get("position", "bottom")
+            highlight_color = sub_config.get("color", "#FFFF00")
+
+            info = video.get_video_info(source_video)
+            v_w = (info.get("video") or {}).get("width") or 1080
+            v_h = (info.get("video") or {}).get("height") or 1920
 
             with_subs = workdir / "with_subs.mp4"
-            video.burn_subtitles(
-                source_video,
-                srt_path,
-                with_subs,
-                font_size=sub_font_size,
-                font_color=sub_color,
-                position=sub_position
-            )
+            if words:
+                ass_path = workdir / "viral_captions.ass"
+                video.generate_viral_captions_ass(
+                    words,
+                    ass_path,
+                    video_width=v_w,
+                    video_height=v_h,
+                    highlight_color=highlight_color
+                )
+                video.burn_ass_subtitles(source_video, ass_path, with_subs)
+            else:
+                segments = (transcription or {}).get("segments") or []
+                srt_content = video.transcription_to_srt(segments)
+                srt_path = workdir / "subs.srt"
+                srt_path.write_text(srt_content, encoding="utf-8")
+                video.burn_subtitles(source_video, srt_path, with_subs)
+
             update_progress(job_id, 92)
 
             # Paso 8.5: Aplicar color grading desde Production Plan

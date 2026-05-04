@@ -335,3 +335,166 @@ def add_text_overlay(
         .run(quiet=True)
     )
     return output_path
+
+
+def generate_viral_captions_ass(
+    words: list[dict],
+    output_path: str | Path,
+    video_width: int = 1080,
+    video_height: int = 1920,
+    highlight_color: str = "#FFFF00",
+    base_color: str = "#FFFFFF",
+    font_size: int = 90
+) -> Path:
+    """Genera archivo .ass con captions estilo viral (palabra por palabra, una palabra grande centrada).
+
+    Cada palabra es un evento independiente que aparece centrada en pantalla
+    durante su duración exacta (timestamps de Whisper).
+    """
+    output_path = Path(output_path)
+
+    primary = hex_to_ass_color(highlight_color)
+    base = hex_to_ass_color(base_color)
+
+    header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {video_width}
+PlayResY: {video_height}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Viral,Impact,{font_size},{primary},{base},&H000000&,&H80000000&,1,0,0,0,100,100,0,0,1,6,2,5,40,40,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+    def fmt_time(seconds: float) -> str:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = seconds % 60
+        return f"{hours}:{minutes:02d}:{secs:05.2f}"
+
+    events = []
+    for w in words:
+        start = w.get("start", 0)
+        end = w.get("end", start + 0.3)
+        text = (w.get("word") or "").strip().upper()
+        if not text:
+            continue
+        text_escaped = text.replace("{", "(").replace("}", ")").replace(",", "")
+        events.append(
+            f"Dialogue: 0,{fmt_time(start)},{fmt_time(end)},Viral,,0,0,0,,{text_escaped}"
+        )
+
+    output_path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
+    logger.info(f"Generado ASS viral captions: {len(events)} palabras → {output_path.name}")
+    return output_path
+
+
+def burn_ass_subtitles(
+    video_path: str | Path,
+    ass_path: str | Path,
+    output_path: str | Path
+) -> Path:
+    """Quema un archivo .ass con todo su styling embebido"""
+    video_path = Path(video_path)
+    ass_path = Path(ass_path)
+    output_path = Path(output_path)
+
+    ass_path_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
+
+    (
+        ffmpeg
+        .input(str(video_path))
+        .output(
+            str(output_path),
+            vf=f"ass='{ass_path_escaped}'",
+            vcodec="libx264",
+            acodec="copy",
+            preset="medium",
+            crf=20
+        )
+        .overwrite_output()
+        .run(quiet=True)
+    )
+    return output_path
+
+
+def cut_silences(
+    video_path: str | Path,
+    output_path: str | Path,
+    min_silence_duration: float = 0.7,
+    silence_threshold_db: int = -30
+) -> Path:
+    """Detecta y elimina silencios largos del video (jump cuts).
+
+    Usa silencedetect para encontrar silencios > min_silence_duration,
+    luego corta y concatena los segmentos hablados.
+    """
+    import subprocess
+    import re
+
+    video_path = Path(video_path)
+    output_path = Path(output_path)
+
+    logger.info(f"Detectando silencios > {min_silence_duration}s en {video_path.name}")
+
+    cmd = [
+        "ffmpeg", "-i", str(video_path),
+        "-af", f"silencedetect=noise={silence_threshold_db}dB:d={min_silence_duration}",
+        "-f", "null", "-"
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    output = result.stderr
+
+    silence_starts = [float(m) for m in re.findall(r"silence_start: ([\d.]+)", output)]
+    silence_ends = [float(m) for m in re.findall(r"silence_end: ([\d.]+)", output)]
+
+    probe = ffmpeg.probe(str(video_path))
+    total_duration = float(probe["format"]["duration"])
+
+    if not silence_starts:
+        logger.info("No se detectaron silencios — copiando video tal cual")
+        shutil.copy(str(video_path), str(output_path))
+        return output_path
+
+    keep_segments = []
+    cursor = 0.0
+    for s_start, s_end in zip(silence_starts, silence_ends):
+        if s_start > cursor:
+            keep_segments.append((cursor, s_start))
+        cursor = s_end
+    if cursor < total_duration:
+        keep_segments.append((cursor, total_duration))
+
+    keep_segments = [(s, e) for s, e in keep_segments if e - s > 0.2]
+
+    if not keep_segments:
+        logger.warning("No quedan segmentos válidos tras corte — copiando original")
+        shutil.copy(str(video_path), str(output_path))
+        return output_path
+
+    logger.info(f"Cortando {len(silence_starts)} silencios, manteniendo {len(keep_segments)} segmentos")
+
+    select_v = "+".join(f"between(t,{s},{e})" for s, e in keep_segments)
+    select_a = select_v
+
+    (
+        ffmpeg
+        .input(str(video_path))
+        .output(
+            str(output_path),
+            vf=f"select='{select_v}',setpts=N/FRAME_RATE/TB",
+            af=f"aselect='{select_a}',asetpts=N/SR/TB",
+            vcodec="libx264",
+            acodec="aac",
+            preset="medium",
+            crf=18
+        )
+        .overwrite_output()
+        .run(quiet=True)
+    )
+    return output_path
