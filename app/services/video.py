@@ -209,15 +209,17 @@ def apply_color_grading_and_subtitles(
     output_path = Path(output_path)
 
     grading_filters = {
-        "cinematico": "eq=contrast=1.2:saturation=0.8:brightness=-0.05",
-        "vibrante": "eq=contrast=1.1:saturation=1.4",
-        "minimalista": "eq=saturation=0.7:brightness=0.05",
-        "oscuro": "eq=contrast=1.3:brightness=-0.1:saturation=0.9",
+        "cinematico": "eq=contrast=1.18:saturation=0.85:brightness=-0.04,vignette=PI/5",
+        "vibrante": "eq=contrast=1.12:saturation=1.35,vignette=PI/6",
+        "minimalista": "eq=saturation=0.75:brightness=0.04",
+        "oscuro": "eq=contrast=1.25:brightness=-0.08:saturation=0.9,vignette=PI/4",
+        "warm": "eq=contrast=1.1:saturation=1.15,colorchannelmixer=rr=1.05:gg=1.0:bb=0.92,vignette=PI/6",
+        "cold": "eq=contrast=1.1:saturation=1.05,colorchannelmixer=rr=0.92:gg=1.0:bb=1.08,vignette=PI/6",
     }
 
     ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
-    eq_filter = grading_filters.get(grading_style.lower(), "")
-    vf = f"{eq_filter},ass='{ass_escaped}'" if eq_filter else f"ass='{ass_escaped}'"
+    eq_filter = grading_filters.get(grading_style.lower(), "vignette=PI/7")
+    vf = f"{eq_filter},ass='{ass_escaped}'"
 
     logger.info(f"Encode combinado: grading='{grading_style}' + captions ASS")
     cmd = [
@@ -360,6 +362,23 @@ def _hex_to_ass_bgr(hex_color: str) -> str:
     return f"&H00{b}{g}{r}&"
 
 
+def _ensure_high_contrast(hex_color: str, fallback: str = "#FFFF00") -> str:
+    """Si el color es muy claro/desaturado, devuelve el fallback."""
+    h = (hex_color or "").lstrip("#")
+    if len(h) != 6:
+        return fallback
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return fallback
+    luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
+    saturation = (max(r, g, b) - min(r, g, b)) / 255
+    if luminance > 0.85 and saturation < 0.2:
+        logger.warning(f"Color {hex_color} bajo contraste (lum={luminance:.2f}) → fallback {fallback}")
+        return fallback
+    return hex_color
+
+
 def _position_to_alignment(position: str) -> tuple[int, float]:
     """Devuelve (Alignment ASS, marginV_pct desde el borde correspondiente)"""
     p = (position or "bottom_third").lower()
@@ -373,6 +392,108 @@ def _position_to_alignment(position: str) -> tuple[int, float]:
     return 2, 0.22
 
 
+# Presets de estilos de captions (catálogo que el LLM elige)
+CAPTION_STYLE_PRESETS = {
+    "tiktok_yellow": {
+        "fontname": "Impact",
+        "base_color": "#FFFFFF",
+        "highlight_color": "#FFFF00",
+        "outline_color": "#000000",
+        "font_size_pct": 7.0,
+        "outline": 8,
+        "shadow": 2,
+        "position": "bottom_third",
+        "weight": 1,
+    },
+    "mrbeast_bold": {
+        "fontname": "Arial Black",
+        "base_color": "#FFFFFF",
+        "highlight_color": "#FF3333",
+        "outline_color": "#000000",
+        "font_size_pct": 8.0,
+        "outline": 10,
+        "shadow": 3,
+        "position": "bottom_third",
+        "weight": 1,
+    },
+    "minimal_clean": {
+        "fontname": "Arial",
+        "base_color": "#FFFFFF",
+        "highlight_color": "#00FFFF",
+        "outline_color": "#000000",
+        "font_size_pct": 5.5,
+        "outline": 4,
+        "shadow": 1,
+        "position": "bottom",
+        "weight": 1,
+    },
+    "neon_cyber": {
+        "fontname": "Impact",
+        "base_color": "#00FFFF",
+        "highlight_color": "#FF00FF",
+        "outline_color": "#000000",
+        "font_size_pct": 7.0,
+        "outline": 6,
+        "shadow": 4,
+        "position": "bottom_third",
+        "weight": 1,
+    },
+    "comic_pop": {
+        "fontname": "Impact",
+        "base_color": "#FFFFFF",
+        "highlight_color": "#FFD700",
+        "outline_color": "#FF0000",
+        "font_size_pct": 7.5,
+        "outline": 8,
+        "shadow": 2,
+        "position": "bottom_third",
+        "weight": 1,
+    },
+    "elegant_serif": {
+        "fontname": "Georgia",
+        "base_color": "#F5F5F5",
+        "highlight_color": "#D4AF37",
+        "outline_color": "#000000",
+        "font_size_pct": 6.0,
+        "outline": 3,
+        "shadow": 2,
+        "position": "bottom_third",
+        "weight": 0,
+    },
+    "energetic_orange": {
+        "fontname": "Impact",
+        "base_color": "#FFFFFF",
+        "highlight_color": "#FF6B00",
+        "outline_color": "#000000",
+        "font_size_pct": 7.5,
+        "outline": 8,
+        "shadow": 3,
+        "position": "bottom_third",
+        "weight": 1,
+    },
+}
+
+
+def _calc_dynamic_font_size(text: str, video_width: int, base_pct: float, video_height: int) -> int:
+    """Reduce el tamaño si el texto es largo para evitar overflow lateral."""
+    base = int(video_height * base_pct / 100)
+    char_count = max(1, len(text))
+    # Ancho disponible: 78% del video (12% margen cada lado, ~2% buffer)
+    available_w = video_width * 0.78
+    # Heurística: ~0.55 píxel por char en fontes Impact
+    max_size = int(available_w / (char_count * 0.55))
+    return max(60, min(base, max_size))
+
+
+def _split_long_chunk(chunk: list[dict], max_chars: int = 14) -> list[list[dict]]:
+    """Divide un chunk si su texto unido excede max_chars."""
+    text = " ".join((w.get("word") or "").strip() for w in chunk)
+    if len(text) <= max_chars or len(chunk) <= 1:
+        return [chunk]
+    mid = len(chunk) // 2
+    return [chunk[:mid], chunk[mid:]]
+
+
 def generate_viral_captions_ass(
     words: list[dict],
     output_path: str | Path,
@@ -380,25 +501,43 @@ def generate_viral_captions_ass(
     video_height: int = 1920,
     highlight_keywords: list[str] | None = None,
     caption_style: dict | None = None,
-    caption_emphasis: list[dict] | None = None
-) -> Path:
-    """Captions virales estilo Submagic/Captions.ai con estilo dinámico definido por el LLM.
+    caption_emphasis: list[dict] | None = None,
+    style_preset: str | None = None
+) -> tuple[Path, list[float]]:
+    """Captions virales con estilos predefinidos + custom override.
 
-    Cada chunk usa el estilo base, EXCEPTO los chunks que caen dentro de un
-    `caption_emphasis` window que aplica color/tamaño/posición override.
+    Returns (path, chunk_start_timestamps) — los timestamps son útiles para
+    sincronizar SFX clicks automáticos.
     """
     output_path = Path(output_path)
-    style = caption_style or {}
-    emphasis = caption_emphasis or []
 
-    base_color = _hex_to_ass_bgr(style.get("base_color", "#FFFFFF"))
-    highlight_color = _hex_to_ass_bgr(style.get("highlight_color", "#FFFF00"))
-    base_font_pct = float(style.get("font_size_pct", 7.5))
-    base_font_size = max(60, int(video_height * base_font_pct / 100))
-    base_alignment, base_margin_pct = _position_to_alignment(style.get("position", "bottom_third"))
+    # Resolver estilo: preset > custom > default
+    preset_name = (style_preset or (caption_style or {}).get("preset") or "tiktok_yellow").lower()
+    preset = CAPTION_STYLE_PRESETS.get(preset_name, CAPTION_STYLE_PRESETS["tiktok_yellow"])
+
+    # Custom puede sobreescribir el preset
+    custom = caption_style or {}
+    fontname = custom.get("fontname", preset["fontname"])
+    base_color_hex = _ensure_high_contrast(custom.get("base_color", preset["base_color"]), "#FFFFFF")
+    highlight_color_hex = _ensure_high_contrast(
+        custom.get("highlight_color", preset["highlight_color"]),
+        "#FFFF00"
+    )
+    outline_color_hex = custom.get("outline_color", preset["outline_color"])
+    base_font_pct = float(custom.get("font_size_pct", preset["font_size_pct"]))
+    outline = int(custom.get("outline_thickness", preset["outline"]))
+    shadow = int(custom.get("shadow", preset["shadow"]))
+    position = custom.get("position", preset["position"])
+    weight_bold = 1 if custom.get("font_weight", "bold" if preset["weight"] else "regular") == "bold" else 0
+
+    base_color = _hex_to_ass_bgr(base_color_hex)
+    highlight_color = _hex_to_ass_bgr(highlight_color_hex)
+    outline_color = _hex_to_ass_bgr(outline_color_hex)
+    base_alignment, base_margin_pct = _position_to_alignment(position)
     base_margin_v = int(video_height * base_margin_pct)
-    outline = int(style.get("outline_thickness", 8))
-    weight_bold = 1 if style.get("font_weight", "bold") == "bold" else 0
+
+    # Margins laterales generosos: 12% del ancho cada lado
+    margin_lr = int(video_width * 0.12)
 
     keywords_set = set()
     for kw in (highlight_keywords or []):
@@ -407,18 +546,19 @@ def generate_viral_captions_ass(
             if cleaned:
                 keywords_set.add(cleaned)
 
-    black = "&H00000000&"
+    emphasis = caption_emphasis or []
 
+    # Header con WrapStyle=0 (smart wrap) — clave para no cortar palabras
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {video_width}
 PlayResY: {video_height}
-WrapStyle: 2
+WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Base,Impact,{base_font_size},{base_color},{base_color},{black},&HC0000000&,{weight_bold},0,0,0,100,100,0,0,1,{outline},3,{base_alignment},80,80,{base_margin_v},1
+Style: Base,{fontname},80,{base_color},{base_color},{outline_color},&HA0000000&,{weight_bold},0,0,0,100,100,0,0,1,{outline},{shadow},{base_alignment},{margin_lr},{margin_lr},{base_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -438,8 +578,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 return em
         return None
 
-    # Agrupar palabras en chunks de 2-3 palabras
-    chunks = []
+    # Paso 1: agrupar en chunks de 2-3 palabras
+    raw_chunks: list[list[dict]] = []
     chunk: list[dict] = []
     for w in words:
         text = (w.get("word") or "").strip()
@@ -447,52 +587,81 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             continue
         chunk.append(w)
         if len(chunk) >= 3 or text.endswith((".", ",", "!", "?")):
-            chunks.append(chunk)
+            raw_chunks.append(chunk)
             chunk = []
     if chunk:
-        chunks.append(chunk)
+        raw_chunks.append(chunk)
 
+    # Paso 2: split chunks largos
+    chunks: list[list[dict]] = []
+    for c in raw_chunks:
+        chunks.extend(_split_long_chunk(c, max_chars=14))
+
+    # Paso 3: generar eventos ASS con tamaño dinámico + animación scale-in
     events = []
+    chunk_starts: list[float] = []
     for c in chunks:
         if not c:
             continue
         start = c[0].get("start", 0)
         end = c[-1].get("end", start + 0.5)
+        chunk_starts.append(start)
         em = find_emphasis(start)
 
+        # Construir línea con keywords destacados
         parts = []
+        full_text_chars = []
         for w in c:
             word_text = (w.get("word") or "").strip().upper()
             word_clean = word_text.strip(".,;:!?¿¡()[]\"'")
             word_escaped = word_text.replace("{", "(").replace("}", ")").replace(",", "")
+            full_text_chars.append(word_text)
             if word_clean in keywords_set:
                 parts.append(f"{{\\c{highlight_color}}}{word_escaped}{{\\c{base_color}}}")
             else:
                 parts.append(word_escaped)
+
+        line_text = " ".join(full_text_chars)
         line = " ".join(parts)
 
-        if em:
-            # Override: color, tamaño, posición — mediante override tags ASS inline
-            em_color = _hex_to_ass_bgr(em.get("color", style.get("highlight_color", "#FFFF00")))
-            em_size = max(60, int(video_height * float(em.get("size_pct", base_font_pct + 3)) / 100))
-            em_align, em_margin_pct = _position_to_alignment(em.get("position", "center"))
-            em_margin = int(video_height * em_margin_pct)
-            override = f"{{\\c{em_color}\\fs{em_size}\\an{em_align}}}"
-            # Pop-in animation: fade rápido + scale-in
-            override = f"{{\\fad(120,80)\\c{em_color}\\fs{em_size}\\an{em_align}}}"
-            line = override + line
-        else:
-            # Pop-in subtle para captions normales
-            line = "{\\fad(60,40)}" + line
+        # Tamaño dinámico según longitud
+        dynamic_size = _calc_dynamic_font_size(line_text, video_width, base_font_pct, video_height)
 
+        # Scale-in pop animation: empieza al 80% y crece a 100% en 150ms
+        anim = (
+            f"\\fad(80,40)"
+            f"\\fscx80\\fscy80"
+            f"\\t(0,150,\\fscx100\\fscy100)"
+            f"\\fs{dynamic_size}"
+        )
+
+        if em:
+            em_color = _hex_to_ass_bgr(_ensure_high_contrast(
+                em.get("color", highlight_color_hex),
+                "#FFFF00"
+            ))
+            em_size_pct = float(em.get("size_pct", base_font_pct + 2))
+            em_size = _calc_dynamic_font_size(line_text, video_width, em_size_pct, video_height)
+            em_align, em_margin_pct = _position_to_alignment(em.get("position", position))
+            anim = (
+                f"\\fad(120,80)"
+                f"\\fscx70\\fscy70"
+                f"\\t(0,200,\\fscx105\\fscy105)"
+                f"\\t(200,250,\\fscx100\\fscy100)"
+                f"\\c{em_color}"
+                f"\\fs{em_size}"
+                f"\\an{em_align}"
+            )
+
+        line = "{" + anim + "}" + line
         events.append(f"Dialogue: 0,{fmt_time(start)},{fmt_time(end)},Base,,0,0,0,,{line}")
 
     output_path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
     logger.info(
-        f"ASS: {len(chunks)} chunks, base={base_font_size}px {style.get('position','bottom_third')}, "
-        f"{len(emphasis)} emphasis, {len(keywords_set)} keywords"
+        f"ASS '{preset_name}': {len(chunks)} chunks (split={len(chunks)-len(raw_chunks)}), "
+        f"{len(emphasis)} emphasis, {len(keywords_set)} keywords, font={fontname}"
     )
-    return output_path
+    return output_path, chunk_starts
 
 
 def add_zoom_punch_in(

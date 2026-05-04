@@ -8,12 +8,13 @@ from loguru import logger
 
 from app.services.db import db
 from app.services.r2 import r2
-from app.services import openai_service, video
+from app.services import openai_service, video, motion
 
 
 ASSETS_DIR = Path(__file__).resolve().parent.parent.parent / "assets"
 SFX_DIR = ASSETS_DIR / "sfx"
 MUSIC_DIR = ASSETS_DIR / "music"
+AMBIENT_DIR = ASSETS_DIR / "ambient"
 
 
 def update_progress(job_id: str, progress: int, status: str = "processing"):
@@ -21,21 +22,82 @@ def update_progress(job_id: str, progress: int, status: str = "processing"):
 
 
 def _pick_sfx(name: str) -> Path | None:
-    """Devuelve un SFX por nombre si existe."""
     p = SFX_DIR / f"{name}.mp3"
     return p if p.exists() else None
 
 
-def _pick_music(mood: str = "chill") -> Path | None:
-    """Devuelve un track de música según mood."""
-    candidates = list(MUSIC_DIR.glob("*.mp3"))
-    if not candidates:
+def _pick_music(track: str) -> Path | None:
+    if not track or track.lower() == "none":
         return None
-    # Match por nombre
-    for c in candidates:
-        if mood.lower() in c.stem.lower():
+    p = MUSIC_DIR / f"{track}.mp3"
+    if p.exists():
+        return p
+    # fallback: cualquier match parcial
+    for c in MUSIC_DIR.glob("*.mp3"):
+        if track.lower() in c.stem.lower():
             return c
-    return random.choice(candidates)
+    return None
+
+
+def _pick_ambient(track: str) -> Path | None:
+    if not track or track.lower() == "none":
+        return None
+    p = AMBIENT_DIR / f"{track}.mp3"
+    return p if p.exists() else None
+
+
+def _build_auto_sfx_events(
+    chunk_starts: list[float],
+    zoom_moments: list[dict],
+    motion_graphics: list[dict],
+    llm_sfx: list[dict],
+    duration: float
+) -> list[dict]:
+    """Construye lista completa de SFX events:
+    - Click suave automático en cada caption chunk
+    - Whoosh automático en cada zoom punch-in
+    - Pop/sync automático en cada motion graphic (según sfx_sync)
+    - SFX estratégicos del LLM (riser, impact, boom)
+    """
+    events = []
+
+    # 1. Auto-clicks en cada caption chunk (volumen muy bajo)
+    click_path = _pick_sfx("click_soft")
+    if click_path:
+        for ts in chunk_starts:
+            if 0 <= ts <= duration:
+                events.append({"path": str(click_path), "timestamp": ts, "volume": 0.08})
+
+    # 2. Auto-whoosh en cada zoom
+    whoosh_path = _pick_sfx("whoosh")
+    if whoosh_path:
+        for zm in zoom_moments:
+            ts = float(zm.get("timestamp", 0))
+            if 0 <= ts <= duration:
+                events.append({"path": str(whoosh_path), "timestamp": ts, "volume": 0.35})
+
+    # 3. SFX sincronizado a cada motion graphic
+    for mg in motion_graphics:
+        sync_type = mg.get("sfx_sync") or "pop"
+        sync_path = _pick_sfx(sync_type)
+        if not sync_path:
+            sync_path = _pick_sfx("pop")
+        if sync_path:
+            ts = float(mg.get("timestamp", 0))
+            if 0 <= ts <= duration:
+                events.append({"path": str(sync_path), "timestamp": ts, "volume": 0.4})
+
+    # 4. SFX estratégicos del LLM (riser, impact, boom...)
+    for ev in llm_sfx:
+        sfx_type = ev.get("type", "pop")
+        sfx_path = _pick_sfx(sfx_type)
+        if sfx_path:
+            ts = float(ev.get("timestamp", 0))
+            if 0 <= ts <= duration:
+                volume = float(ev.get("volume", 0.5))
+                events.append({"path": str(sfx_path), "timestamp": ts, "volume": volume})
+
+    return events
 
 
 def process_video_job(
@@ -140,32 +202,36 @@ def process_video_job(
             for key, val in decisions.items():
                 logger.info(f"Decisión {key}={val} — {reasons.get(key, 'sin razón')}")
 
-            # Defaults seguros si el LLM no devolvió decisiones
+            # Defaults AGRESIVOS si el LLM no devolvió decisiones explícitas
             apply_captions = decisions.get("apply_captions", True)
             apply_grading = decisions.get("apply_color_grading", True)
-            apply_zoom = decisions.get("apply_zoom_punch_in", False)
-            apply_text_overlays = decisions.get("apply_text_overlays", False)
+            apply_zoom = decisions.get("apply_zoom_punch_in", True)
+            apply_text_overlays = decisions.get("apply_text_overlays", True)
             apply_broll = decisions.get("apply_broll", False)
-            apply_sfx = decisions.get("apply_sfx", False)
-            apply_music = decisions.get("apply_background_music", False)
+            apply_sfx = decisions.get("apply_sfx", True)
+            apply_music = decisions.get("apply_background_music", True)
             apply_fade = decisions.get("apply_fade", True)
 
             words = (transcription or {}).get("words") or []
             highlight_keywords = plan_data.get("highlight_keywords") or []
             caption_style = plan_data.get("caption_style") or {}
             caption_emphasis = plan_data.get("caption_emphasis") or []
+            motion_graphics_list = plan_data.get("motion_graphics") or []
             grading_style = plan_data.get("color_grading", "neutral") if apply_grading else "neutral"
 
-            # Paso 8: Captions + grading (70% → 78%)
+            chunk_starts: list[float] = []
+
+            # Paso 8: Captions + grading + vignette (70% → 78%)
             stage = source_video
             if apply_captions and words:
                 ass_path = workdir / "viral_captions.ass"
-                video.generate_viral_captions_ass(
+                _, chunk_starts = video.generate_viral_captions_ass(
                     words, ass_path,
                     video_width=v_w, video_height=v_h,
                     highlight_keywords=highlight_keywords,
                     caption_style=caption_style,
-                    caption_emphasis=caption_emphasis
+                    caption_emphasis=caption_emphasis,
+                    style_preset=caption_style.get("preset")
                 )
                 graded_path = workdir / "graded.mp4"
                 video.apply_color_grading_and_subtitles(
@@ -179,7 +245,7 @@ def process_video_job(
                 stage = graded_path
             update_progress(job_id, 78)
 
-            # Paso 9: Zoom punch-in SI el LLM lo decidió (78% → 82%)
+            # Paso 9: Zoom punch-in (78% → 81%)
             zoom_moments = plan_data.get("zoom_moments", []) if apply_zoom else []
             if apply_zoom and zoom_moments:
                 try:
@@ -188,28 +254,32 @@ def process_video_job(
                     stage = zoomed_path
                 except Exception as e:
                     logger.warning(f"zoom falló: {e}")
-            update_progress(job_id, 82)
+            update_progress(job_id, 81)
 
-            # Paso 10: Text overlays SI el LLM lo decidió (82% → 86%)
-            text_overlays = plan_data.get("text_overlays", []) if apply_text_overlays else []
-            for i, ov in enumerate(text_overlays[:2]):
+            # Paso 10: Motion graphics (todas en 1 encode) (81% → 85%)
+            if motion_graphics_list:
                 try:
-                    text = (ov.get("text") or "").strip()
-                    if not text or len(text) > 30:
-                        continue
-                    nxt = workdir / f"with_text_{i}.mp4"
-                    video.add_text_overlay(
-                        stage, nxt,
-                        text=text,
-                        timestamp=float(ov.get("timestamp", 0)),
-                        duration=float(ov.get("duration", 1.5)),
-                        font_size=int(v_h * 0.06),
-                        text_color="white"
+                    mg_ass = workdir / "motion_graphics.ass"
+                    motion.render_motion_graphics_ass(
+                        motion_graphics_list, mg_ass,
+                        video_width=v_w, video_height=v_h
                     )
-                    stage = nxt
+                    mg_path = workdir / "with_mg.mp4"
+                    mg_ass_escaped = str(mg_ass).replace("\\", "/").replace(":", "\\:")
+                    import subprocess as _sp
+                    _sp.run([
+                        "ffmpeg", "-y", "-i", str(stage),
+                        "-vf", f"ass='{mg_ass_escaped}'",
+                        "-map", "0:v:0", "-map", "0:a?",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
+                        "-c:a", "copy",
+                        str(mg_path)
+                    ], capture_output=True, check=True)
+                    stage = mg_path
+                    logger.info(f"Motion graphics: {len(motion_graphics_list)} aplicadas")
                 except Exception as e:
-                    logger.warning(f"text_overlay {i} falló: {e}")
-            update_progress(job_id, 86)
+                    logger.warning(f"motion graphics falló: {e}")
+            update_progress(job_id, 85)
 
             # Paso 11: B-roll DALL-E SI el LLM lo decidió (86% → 90%)
             broll_list = plan_data.get("broll", []) if apply_broll else []
@@ -233,38 +303,54 @@ def process_video_job(
                     logger.warning(f"B-roll {i} falló: {e}")
             update_progress(job_id, 90)
 
-            # Paso 12: SFX SI el LLM lo decidió (90% → 92%)
-            sfx_events = []
-            if apply_sfx:
-                llm_sfx = plan_data.get("sfx_events", [])
-                for ev in llm_sfx:
-                    sfx_path = _pick_sfx(ev.get("type", "pop"))
-                    if sfx_path:
-                        sfx_events.append({
-                            "path": sfx_path,
-                            "timestamp": float(ev.get("timestamp", 0)),
-                            "volume": 0.5
-                        })
-                if sfx_events:
-                    try:
-                        with_sfx = workdir / "with_sfx.mp4"
-                        video.add_multiple_sound_effects(stage, with_sfx, sfx_events)
-                        stage = with_sfx
-                    except Exception as e:
-                        logger.warning(f"SFX falló: {e}")
+            # Paso 12: SFX events combinados (90% → 92%)
+            # Auto: clicks en cada caption + whoosh en zooms + pop en motion graphics
+            # LLM: riser, impact, boom en momentos clave
+            duration_now = video.get_video_info(stage).get("duration", 0)
+            llm_sfx = plan_data.get("sfx_events", []) if apply_sfx else []
+            all_sfx_events = _build_auto_sfx_events(
+                chunk_starts=chunk_starts,
+                zoom_moments=zoom_moments,
+                motion_graphics=motion_graphics_list,
+                llm_sfx=llm_sfx,
+                duration=duration_now
+            )
+            if all_sfx_events:
+                try:
+                    with_sfx = workdir / "with_sfx.mp4"
+                    video.add_multiple_sound_effects(stage, with_sfx, all_sfx_events)
+                    stage = with_sfx
+                    logger.info(f"SFX: {len(all_sfx_events)} eventos mezclados")
+                except Exception as e:
+                    logger.warning(f"SFX falló: {e}")
             update_progress(job_id, 92)
 
-            # Paso 13: Música SI el LLM lo decidió (92% → 94%)
+            # Paso 13a: Ambient track (siempre intentar, vol muy bajo)
+            ambient_track_name = plan_data.get("ambient_track") or "tiktok_ambient_beat"
+            ambient_path = _pick_ambient(ambient_track_name)
+            if ambient_path:
+                try:
+                    with_ambient = workdir / "with_ambient.mp4"
+                    video.mix_background_music(stage, ambient_path, with_ambient, music_volume=0.06)
+                    stage = with_ambient
+                    logger.info(f"Ambient: {ambient_track_name} @ 6% vol")
+                except Exception as e:
+                    logger.warning(f"ambient falló: {e}")
+
+            # Paso 13b: Música SI el LLM lo decidió (92% → 94%)
             music_path = None
             if apply_music:
-                music_mood = (plan_data.get("music") or {}).get("mood", "chill")
-                if music_mood and music_mood.lower() != "none":
-                    music_path = _pick_music(music_mood)
+                music_obj = plan_data.get("music") or {}
+                music_track = music_obj.get("track") or music_obj.get("mood") or ""
+                music_vol = float(music_obj.get("volume", 0.10))
+                if music_track and music_track.lower() != "none":
+                    music_path = _pick_music(music_track)
                     if music_path:
                         try:
                             with_music = workdir / "with_music.mp4"
-                            video.mix_background_music(stage, music_path, with_music, music_volume=0.12)
+                            video.mix_background_music(stage, music_path, with_music, music_volume=music_vol)
                             stage = with_music
+                            logger.info(f"Music: {music_track} @ {music_vol*100:.0f}% vol")
                         except Exception as e:
                             logger.warning(f"music falló: {e}")
             update_progress(job_id, 94)

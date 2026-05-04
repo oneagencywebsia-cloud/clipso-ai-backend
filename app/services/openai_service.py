@@ -93,10 +93,11 @@ def generate_production_plan(
         "Devuelves SIEMPRE JSON válido."
     )
 
+    duration = transcription.get('duration') or 0
     user_prompt = f"""
-Genera un plan de producción detallado para este vídeo.
+Genera un plan de edición VIRAL para este vídeo. Tu objetivo: que el espectador no pueda parar de mirar.
 
-TRANSCRIPCIÓN:
+TRANSCRIPCIÓN ({duration:.1f}s):
 {transcription.get('text', '')[:3000]}
 
 ANÁLISIS VISUAL:
@@ -105,7 +106,44 @@ ANÁLISIS VISUAL:
 PREFERENCIAS DEL USUARIO:
 {user_preferences or 'Ninguna específica'}
 
-Analiza el vídeo COMPLETO y decide qué efectos aportan valor. NO apliques todo por defecto. JSON con esta estructura:
+CATÁLOGO DE RECURSOS DISPONIBLES (úsalos):
+
+📝 ESTILOS DE CAPTIONS (elige UNO según tono):
+  - "tiktok_yellow": blanco + amarillo, Impact, viral clásico
+  - "mrbeast_bold": blanco + rojo, Arial Black, contenido dinámico
+  - "minimal_clean": blanco + cyan, Arial fino, profesional/calmado
+  - "neon_cyber": cyan + magenta, Impact, tech/gaming
+  - "comic_pop": blanco + dorado, outline rojo, comedia/divertido
+  - "elegant_serif": grisáceo + oro, Georgia, lujo/elegante
+  - "energetic_orange": blanco + naranja, fitness/motivación
+
+🎵 SFX DISPONIBLES (úsalos en sfx_events):
+  - "whoosh", "whoosh_long" → transiciones, zooms
+  - "click_soft" → automático en cada caption (no listar)
+  - "pop" → text overlays, motion graphics aparecen
+  - "ding" → checkpoint, completado
+  - "riser_short" (2s buildup), "riser_long" (4s) → ANTES de momentos clave
+  - "impact_low" → punchline pesado / beat drop
+  - "impact_high" → énfasis fuerte
+  - "swoosh" → transiciones suaves
+  - "boom" → apertura dramática
+  - "notification" → estilo iOS/social
+
+🎬 MOTION GRAPHICS DISPONIBLES (úsalos en motion_graphics):
+  - "title_card": texto grande centrado con scale-in (intro o cambio de tema)
+  - "text_pop": texto que rebota en posición específica (énfasis)
+  - "lower_third": barra inferior con título+subtítulo (presentación de persona/lugar)
+  - "counter": número animado de A→B (estadísticas)
+  - "call_out": flecha + texto apuntando a algo (tutoriales)
+  - "zoom_shake_text": texto con scale-shake intenso (PUNCHLINE)
+
+🎼 MÚSICA POR MOOD:
+  - "chill_lofi", "epic_cinematic", "upbeat_energetic", "corporate_clean", "tech_modern", "none"
+
+🌫️ AMBIENT VIRAL (siempre se aplica subtle):
+  - Auto-seleccionado según tono: tiktok_ambient_beat | cinematic_drone | asmr_room_tone | synth_pad_ethereal | subtle_pulse
+
+JSON con esta estructura:
 
 {{
   "summary": "resumen 1 frase",
@@ -137,14 +175,20 @@ Analiza el vídeo COMPLETO y decide qué efectos aportan valor. NO apliques todo
   "color_grading": "uno de: cinematico | vibrante | minimalista | oscuro | neutral",
 
   "caption_style": {{
-    "base_color": "#FFFFFF",
-    "highlight_color": "#FFFF00",
-    "font_size_pct": 7.5,
-    "position": "uno de: top | center | bottom_third | bottom",
-    "outline_thickness": 8,
-    "font_weight": "bold | regular",
-    "reason": "por qué este estilo encaja con el tono del vídeo"
+    "preset": "uno de los 7 estilos disponibles",
+    "reason": "por qué este preset encaja con el tono del vídeo"
   }},
+
+  "motion_graphics": [
+    {{
+      "type": "title_card | text_pop | lower_third | counter | call_out | zoom_shake_text",
+      "timestamp": 3.0,
+      "duration": 2.0,
+      "params": {{"text": "TEXTO CORTO", "color": "#FFFF00", "size_pct": 8}},
+      "sfx_sync": "pop | impact_high | impact_low | ding",
+      "reason": "..."
+    }}
+  ],
 
   "caption_emphasis": [
     {{
@@ -186,31 +230,57 @@ Analiza el vídeo COMPLETO y decide qué efectos aportan valor. NO apliques todo
   "sfx_events": [
     {{
       "timestamp": 0.1,
-      "type": "whoosh | pop | ding | impact",
+      "type": "whoosh | whoosh_long | pop | ding | riser_short | riser_long | impact_low | impact_high | swoosh | boom | notification",
+      "volume": 0.5,
       "reason": "..."
     }}
   ],
 
-  "music": {{"mood": "chill | energico | epic | none", "intensity": "baja | media | alta"}}
+  "music": {{"track": "chill_lofi | epic_cinematic | upbeat_energetic | corporate_clean | tech_modern | none", "volume": 0.10}},
+
+  "ambient_track": "tiktok_ambient_beat | cinematic_drone | asmr_room_tone | synth_pad_ethereal | subtle_pulse | none"
 }}
 
-REGLAS DE ESTILO DE CAPTIONS (cada decisión basada en tono/contexto):
-- `caption_style.base_color`: blanco para alto contraste o color de marca si encaja.
-- `caption_style.highlight_color`: amarillo vivo (#FFFF00) clásico viral, o color de marca/tono.
-- `caption_style.font_size_pct`: 6.5-9.0 (% altura). Mayor para vídeos energéticos, menor para informativos.
-- `caption_style.position`: bottom_third (estándar), center solo si no tapa al sujeto, top para títulos.
-- `caption_emphasis`: SOLO para 1-3 momentos clave del mensaje (climax, punchline, CTA).
+REGLAS ESTRATÉGICAS (OBLIGATORIAS):
 
-REGLAS ESTRATÉGICAS:
-1. `decisions.*` son OBLIGATORIAS — decide cada una basándote en el contenido real.
-2. NO listes elementos en zoom_moments/text_overlays/broll/sfx_events si su `apply_*` es false.
-3. `text_overlays[].text` SIEMPRE 1-3 palabras MAYÚSCULAS, NUNCA una descripción.
-4. Si tono es CALMADO/ÍNTIMO → considera apply_zoom_punch_in=false, apply_sfx=false, apply_background_music=false.
-5. Si tono es ENERGICO/DIVERTIDO → SFX y zoom encajan bien.
-6. Si el vídeo es INFORMATIVO/TUTORIAL → text_overlays y B-roll suelen ayudar.
-7. B-roll solo si NO se ve al sujeto y el tema se beneficia de imagen externa.
-8. `highlight_keywords` deben aparecer en la transcripción real.
-9. Cada decisión TIENE que estar justificada en `decision_reasons`.
+1. CAPTIONS: SIEMPRE apply_captions=true si hay habla. Elige preset según tono.
+
+2. MOTION GRAPHICS — sé GENEROSO:
+   - Vídeo > 10s: MÍNIMO 1 motion graphic
+   - Vídeo > 20s: MÍNIMO 2 motion graphics
+   - Vídeo > 30s: MÍNIMO 3 motion graphics + considerar 1 B-roll
+   - Cada motion graphic DEBE tener sfx_sync para sonido sincronizado
+   - title_card al inicio si hay un concepto fuerte
+   - zoom_shake_text en punchlines/revelaciones
+   - call_out para tutoriales
+   - counter cuando se mencionan números/estadísticas
+
+3. SFX EVENTS — SIEMPRE incluye:
+   - 1 sfx al inicio (whoosh/boom según tono)
+   - 1 riser + 1 impact en CADA momento clave del mensaje (revelación, dato, CTA)
+   - Mínimo 1 cada 8 segundos
+   - El click_soft en captions es AUTOMÁTICO (no lo listes)
+
+4. ZOOM PUNCH-INS:
+   - SIEMPRE apply_zoom_punch_in=true salvo en vídeos muy calmados
+   - Mínimo 1 zoom cada 10 segundos
+   - intensity: subtle (default), medium (énfasis), strong (revelación)
+
+5. MÚSICA + AMBIENT:
+   - ambient_track: SIEMPRE elige uno (no "none") — da textura premium imperceptible
+   - music.track: solo si encaja con el tono
+   - Vlog íntimo → ambient_track="asmr_room_tone", music="none"
+   - Tutorial → ambient_track="subtle_pulse", music="corporate_clean"
+   - Comedy/hype → ambient_track="tiktok_ambient_beat", music="upbeat_energetic"
+   - Storytelling → ambient_track="cinematic_drone", music="epic_cinematic"
+
+6. CAPTION_EMPHASIS: usa para 1-3 momentos clave (climax, punchline, CTA).
+
+7. text_overlays: 1-3 palabras MAYÚSCULAS, NUNCA descripciones.
+
+8. highlight_keywords: deben aparecer en la transcripción.
+
+9. NO seas conservador. SIEMPRE inclínate por aplicar el efecto si aporta dinamismo.
 """
 
     response = client.chat.completions.create(
@@ -219,7 +289,7 @@ REGLAS ESTRATÉGICAS:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        max_tokens=3000,
+        max_tokens=4000,
         response_format={"type": "json_object"}
     )
 
