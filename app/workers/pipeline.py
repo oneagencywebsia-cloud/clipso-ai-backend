@@ -76,14 +76,15 @@ def process_video_job(
             # Paso 7: Generar Production Plan (70% → 80%)
             logger.info("Generando Production Plan...")
             plan = openai_service.generate_production_plan(
-                transcription=transcription,
-                visual_analysis=visual_analysis,
+                transcription=transcription or {},
+                visual_analysis=visual_analysis or {},
                 user_preferences=job.get("preferences")
             )
             update_progress(job_id, 80)
 
             # Paso 8: Aplicar edición — subtítulos quemados (80% → 92%)
-            srt_content = video.transcription_to_srt(transcription["segments"])
+            segments = (transcription or {}).get("segments") or []
+            srt_content = video.transcription_to_srt(segments)
             srt_path = workdir / "subs.srt"
             srt_path.write_text(srt_content, encoding="utf-8")
 
