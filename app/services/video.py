@@ -357,52 +357,242 @@ def add_text_overlay(
     return output_path
 
 
+def _hex_to_ass_bgr(hex_color: str) -> str:
+    """#RRGGBB → &HBBGGRR& (formato ASS)"""
+    h = (hex_color or "").lstrip("#").upper()
+    if len(h) != 6:
+        return "&H00FFFFFF&"
+    r, g, b = h[0:2], h[2:4], h[4:6]
+    return f"&H00{b}{g}{r}&"
+
+
+def _position_to_alignment(position: str) -> tuple[int, float]:
+    """Devuelve (Alignment ASS, marginV_pct desde el borde correspondiente)"""
+    p = (position or "bottom_third").lower()
+    if p == "top":
+        return 8, 0.10
+    if p == "center":
+        return 5, 0.0
+    if p == "bottom":
+        return 2, 0.08
+    # bottom_third (default)
+    return 2, 0.22
+
+
 def generate_viral_captions_ass(
     words: list[dict],
     output_path: str | Path,
     video_width: int = 1080,
     video_height: int = 1920,
-    highlight_color: str = "#FFFF00",
-    base_color: str = "#FFFFFF",
-    font_size: int = 90
+    highlight_keywords: list[str] | None = None,
+    caption_style: dict | None = None,
+    caption_emphasis: list[dict] | None = None
 ) -> Path:
-    """Genera archivo .ass con captions estilo viral (palabra por palabra centrada)."""
+    """Captions virales estilo Submagic/Captions.ai con estilo dinámico definido por el LLM.
+
+    Cada chunk usa el estilo base, EXCEPTO los chunks que caen dentro de un
+    `caption_emphasis` window que aplica color/tamaño/posición override.
+    """
     output_path = Path(output_path)
-    primary = hex_to_ass_color(highlight_color)
+    style = caption_style or {}
+    emphasis = caption_emphasis or []
+
+    base_color = _hex_to_ass_bgr(style.get("base_color", "#FFFFFF"))
+    highlight_color = _hex_to_ass_bgr(style.get("highlight_color", "#FFFF00"))
+    base_font_pct = float(style.get("font_size_pct", 7.5))
+    base_font_size = max(60, int(video_height * base_font_pct / 100))
+    base_alignment, base_margin_pct = _position_to_alignment(style.get("position", "bottom_third"))
+    base_margin_v = int(video_height * base_margin_pct)
+    outline = int(style.get("outline_thickness", 8))
+    weight_bold = 1 if style.get("font_weight", "bold") == "bold" else 0
+
+    keywords_set = set()
+    for kw in (highlight_keywords or []):
+        for w in str(kw).split():
+            cleaned = w.strip(".,;:!?¿¡()[]\"'").upper()
+            if cleaned:
+                keywords_set.add(cleaned)
+
+    black = "&H00000000&"
 
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {video_width}
 PlayResY: {video_height}
-WrapStyle: 0
+WrapStyle: 2
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Viral,Impact,{font_size},{primary},&HFFFFFF&,&H000000&,&H80000000&,1,0,0,0,100,100,0,0,1,6,2,5,40,40,40,1
+Style: Base,Impact,{base_font_size},{base_color},{base_color},{black},&HC0000000&,{weight_bold},0,0,0,100,100,0,0,1,{outline},3,{base_alignment},80,80,{base_margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
     def fmt_time(seconds: float) -> str:
-        hours = int(seconds // 3600)
-        minutes = int((seconds % 3600) // 60)
-        secs = seconds % 60
-        return f"{hours}:{minutes:02d}:{secs:05.2f}"
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = seconds % 60
+        return f"{h}:{m:02d}:{s:05.2f}"
 
-    events = []
+    def find_emphasis(timestamp: float) -> dict | None:
+        for em in emphasis:
+            ts = float(em.get("timestamp", -1))
+            dur = float(em.get("duration", 0))
+            if ts <= timestamp <= ts + dur:
+                return em
+        return None
+
+    # Agrupar palabras en chunks de 2-3 palabras
+    chunks = []
+    chunk: list[dict] = []
     for w in words:
-        start = w.get("start", 0)
-        end = w.get("end", start + 0.3)
-        text = (w.get("word") or "").strip().upper()
+        text = (w.get("word") or "").strip()
         if not text:
             continue
-        text_escaped = text.replace("{", "(").replace("}", ")").replace(",", "")
-        events.append(f"Dialogue: 0,{fmt_time(start)},{fmt_time(end)},Viral,,0,0,0,,{text_escaped}")
+        chunk.append(w)
+        if len(chunk) >= 3 or text.endswith((".", ",", "!", "?")):
+            chunks.append(chunk)
+            chunk = []
+    if chunk:
+        chunks.append(chunk)
+
+    events = []
+    for c in chunks:
+        if not c:
+            continue
+        start = c[0].get("start", 0)
+        end = c[-1].get("end", start + 0.5)
+        em = find_emphasis(start)
+
+        parts = []
+        for w in c:
+            word_text = (w.get("word") or "").strip().upper()
+            word_clean = word_text.strip(".,;:!?¿¡()[]\"'")
+            word_escaped = word_text.replace("{", "(").replace("}", ")").replace(",", "")
+            if word_clean in keywords_set:
+                parts.append(f"{{\\c{highlight_color}}}{word_escaped}{{\\c{base_color}}}")
+            else:
+                parts.append(word_escaped)
+        line = " ".join(parts)
+
+        if em:
+            # Override: color, tamaño, posición — mediante override tags ASS inline
+            em_color = _hex_to_ass_bgr(em.get("color", style.get("highlight_color", "#FFFF00")))
+            em_size = max(60, int(video_height * float(em.get("size_pct", base_font_pct + 3)) / 100))
+            em_align, em_margin_pct = _position_to_alignment(em.get("position", "center"))
+            em_margin = int(video_height * em_margin_pct)
+            override = f"{{\\c{em_color}\\fs{em_size}\\an{em_align}}}"
+            # Pop-in animation: fade rápido + scale-in
+            override = f"{{\\fad(120,80)\\c{em_color}\\fs{em_size}\\an{em_align}}}"
+            line = override + line
+        else:
+            # Pop-in subtle para captions normales
+            line = "{\\fad(60,40)}" + line
+
+        events.append(f"Dialogue: 0,{fmt_time(start)},{fmt_time(end)},Base,,0,0,0,,{line}")
 
     output_path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
-    logger.info(f"Generado ASS viral captions: {len(events)} palabras → {output_path.name}")
+    logger.info(
+        f"ASS: {len(chunks)} chunks, base={base_font_size}px {style.get('position','bottom_third')}, "
+        f"{len(emphasis)} emphasis, {len(keywords_set)} keywords"
+    )
+    return output_path
+
+
+def add_zoom_punch_in(
+    video_path: str | Path,
+    output_path: str | Path,
+    zoom_moments: list[dict] | None = None
+) -> Path:
+    """Aplica zoom punch-in en momentos específicos (efecto pro)."""
+    video_path = Path(video_path)
+    output_path = Path(output_path)
+
+    if not zoom_moments:
+        zoom_moments = [{"timestamp": 0.0, "intensity": "subtle"}]
+
+    intensity_map = {"subtle": 1.05, "medium": 1.10, "strong": 1.18}
+
+    # Construir filter chain: para cada momento, aplicar zoom durante 1.5s con easing
+    # Filtro zoompan trabajaría sobre imágenes; para video usamos scale dinámico
+    expressions = []
+    for m in zoom_moments[:3]:
+        ts = float(m.get("timestamp", 0))
+        zoom = intensity_map.get(m.get("intensity", "subtle"), 1.05)
+        # Zoom durante 0.4s, mantener 1.0s, salir en 0.4s
+        expressions.append(f"if(between(t,{ts},{ts+0.4}),1+({zoom-1})*((t-{ts})/0.4),"
+                          f"if(between(t,{ts+0.4},{ts+1.4}),{zoom},"
+                          f"if(between(t,{ts+1.4},{ts+1.8}),{zoom}-({zoom-1})*((t-{ts+1.4})/0.4),1)))")
+
+    # Combinar todos en max() — el zoom mayor en cada instante gana
+    if len(expressions) == 1:
+        zoom_expr = expressions[0]
+    else:
+        zoom_expr = f"max({','.join(expressions)})" if False else expressions[0]
+        for e in expressions[1:]:
+            zoom_expr = f"max({zoom_expr},{e})"
+
+    vf = (
+        f"scale=iw*4:ih*4,"
+        f"crop=w='iw/4/({zoom_expr})':h='ih/4/({zoom_expr})':"
+        f"x='(iw-iw/4/({zoom_expr}))/2':y='(ih-ih/4/({zoom_expr}))/2',"
+        f"scale=iw/4:ih/4"
+    )
+
+    logger.info(f"Aplicando {len(zoom_moments)} zoom punch-ins")
+
+    (
+        ffmpeg
+        .input(str(video_path))
+        .output(
+            str(output_path),
+            vf=vf,
+            vcodec="libx264",
+            acodec="copy",
+            preset=_TMP_PRESET,
+            crf=_TMP_CRF
+        )
+        .overwrite_output()
+        .run(quiet=True)
+    )
+    return output_path
+
+
+def add_fade_in_out(
+    video_path: str | Path,
+    output_path: str | Path,
+    fade_duration: float = 0.4
+) -> Path:
+    """Fade in al inicio y fade out al final."""
+    video_path = Path(video_path)
+    output_path = Path(output_path)
+
+    probe = ffmpeg.probe(str(video_path))
+    duration = float(probe["format"]["duration"])
+    fade_out_start = max(0, duration - fade_duration)
+
+    vf = f"fade=t=in:st=0:d={fade_duration},fade=t=out:st={fade_out_start}:d={fade_duration}"
+    af = f"afade=t=in:st=0:d={fade_duration},afade=t=out:st={fade_out_start}:d={fade_duration}"
+
+    logger.info(f"Aplicando fade in/out de {fade_duration}s")
+
+    (
+        ffmpeg
+        .input(str(video_path))
+        .output(
+            str(output_path),
+            vf=vf,
+            af=af,
+            vcodec="libx264",
+            acodec="aac",
+            preset=_TMP_PRESET,
+            crf=_TMP_CRF
+        )
+        .overwrite_output()
+        .run(quiet=True)
+    )
     return output_path
 
 
@@ -430,6 +620,115 @@ def burn_ass_subtitles(
         .overwrite_output()
         .run(quiet=True)
     )
+    return output_path
+
+
+def mix_background_music(
+    video_path: str | Path,
+    music_path: str | Path,
+    output_path: str | Path,
+    music_volume: float = 0.15,
+    fade_duration: float = 1.0
+) -> Path:
+    """Mezcla música de fondo con el audio original (música a 15% volumen)."""
+    video_path = Path(video_path)
+    music_path = Path(music_path)
+    output_path = Path(output_path)
+
+    probe = ffmpeg.probe(str(video_path))
+    duration = float(probe["format"]["duration"])
+
+    logger.info(f"Mezclando música de fondo @ {music_volume*100:.0f}% volumen")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-stream_loop", "-1", "-i", str(music_path),
+        "-filter_complex",
+        f"[1:a]volume={music_volume},afade=t=in:st=0:d={fade_duration},"
+        f"afade=t=out:st={duration-fade_duration}:d={fade_duration},atrim=duration={duration}[bg];"
+        f"[0:a][bg]amix=inputs=2:duration=first:dropout_transition=2[a]",
+        "-map", "0:v", "-map", "[a]",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-shortest",
+        str(output_path)
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
+    return output_path
+
+
+def add_sound_effect(
+    video_path: str | Path,
+    sfx_path: str | Path,
+    output_path: str | Path,
+    timestamp: float,
+    volume: float = 0.7
+) -> Path:
+    """Inserta un sound effect en un timestamp específico."""
+    video_path = Path(video_path)
+    sfx_path = Path(sfx_path)
+    output_path = Path(output_path)
+
+    logger.info(f"Insertando SFX {sfx_path.name} @ {timestamp}s")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-i", str(sfx_path),
+        "-filter_complex",
+        f"[1:a]volume={volume},adelay={int(timestamp*1000)}|{int(timestamp*1000)}[sfx];"
+        f"[0:a][sfx]amix=inputs=2:duration=first[a]",
+        "-map", "0:v", "-map", "[a]",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        str(output_path)
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
+    return output_path
+
+
+def add_multiple_sound_effects(
+    video_path: str | Path,
+    output_path: str | Path,
+    sfx_events: list[dict]
+) -> Path:
+    """Inserta múltiples SFX en un solo encode. sfx_events: [{path, timestamp, volume}]"""
+    video_path = Path(video_path)
+    output_path = Path(output_path)
+
+    if not sfx_events:
+        shutil.copy(str(video_path), str(output_path))
+        return output_path
+
+    inputs = ["-i", str(video_path)]
+    for ev in sfx_events:
+        inputs += ["-i", str(ev["path"])]
+
+    filter_parts = []
+    mix_inputs = ["[0:a]"]
+    for i, ev in enumerate(sfx_events, start=1):
+        ts_ms = int(float(ev.get("timestamp", 0)) * 1000)
+        vol = ev.get("volume", 0.7)
+        filter_parts.append(f"[{i}:a]volume={vol},adelay={ts_ms}|{ts_ms}[s{i}]")
+        mix_inputs.append(f"[s{i}]")
+
+    filter_parts.append(
+        f"{''.join(mix_inputs)}amix=inputs={len(mix_inputs)}:duration=first:dropout_transition=0[a]"
+    )
+
+    logger.info(f"Mezclando {len(sfx_events)} SFX en un solo encode")
+
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-filter_complex", ";".join(filter_parts),
+        "-map", "0:v", "-map", "[a]",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        str(output_path)
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
     return output_path
 
 

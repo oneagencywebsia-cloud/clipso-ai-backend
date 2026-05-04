@@ -83,10 +83,14 @@ def generate_production_plan(
     logger.info("Generando Production Plan con GPT-4")
 
     system_prompt = (
-        "Eres un editor de vídeo profesional con 15 años de experiencia. "
-        "Generas planes de edición precisos y creativos respetando SIEMPRE el mensaje original. "
-        "NUNCA distorsionas el contenido. Solo añades elementos que potencian el mensaje. "
-        "Devuelves SIEMPRE JSON válido con la estructura solicitada."
+        "Eres un editor de vídeo profesional con 15 años de experiencia editando contenido viral "
+        "para Instagram Reels, TikTok y YouTube Shorts. "
+        "Tu trabajo es analizar CADA vídeo individualmente y decidir ESTRATÉGICAMENTE qué "
+        "elementos de edición aportan valor real. NO aplicas efectos por defecto: cada decisión "
+        "se justifica según el contenido, tono, ritmo y mensaje del vídeo. "
+        "Un vídeo calmado no necesita zoom agresivo; un vídeo informativo puede no necesitar B-roll; "
+        "un vlog íntimo no necesita música de fondo. Respeta SIEMPRE el mensaje original. "
+        "Devuelves SIEMPRE JSON válido."
     )
 
     user_prompt = f"""
@@ -101,44 +105,112 @@ ANÁLISIS VISUAL:
 PREFERENCIAS DEL USUARIO:
 {user_preferences or 'Ninguna específica'}
 
-Devuelve un JSON con esta estructura:
+Analiza el vídeo COMPLETO y decide qué efectos aportan valor. NO apliques todo por defecto. JSON con esta estructura:
+
 {{
-  "summary": "resumen del vídeo en 1 frase",
-  "style": "estilo recomendado (dinámico, minimalista, corporativo, etc.)",
-  "color_grading": "tono de color (cinematográfico cálido, frío profesional, vibrante, etc.)",
-  "subtitles": {{
-    "style": "estilo (impactante, minimalista, neón, etc.)",
-    "position": "posición en pantalla",
-    "color": "color principal en hex"
+  "summary": "resumen 1 frase",
+  "tone": "uno de: energico | calmado | informativo | emotivo | divertido | profesional",
+  "pace": "uno de: rapido | medio | lento",
+
+  "decisions": {{
+    "apply_jump_cuts": true,
+    "apply_captions": true,
+    "apply_color_grading": true,
+    "apply_zoom_punch_in": true,
+    "apply_text_overlays": true,
+    "apply_broll": false,
+    "apply_sfx": true,
+    "apply_background_music": false,
+    "apply_fade": true
   }},
-  "animations": [
+  "decision_reasons": {{
+    "apply_jump_cuts": "explica por qué SÍ o NO según el ritmo del speaker",
+    "apply_color_grading": "explica por qué este estilo encaja con el tono",
+    "apply_zoom_punch_in": "explica por qué SÍ o NO según el dinamismo",
+    "apply_text_overlays": "explica por qué SÍ o NO",
+    "apply_broll": "explica si el contenido se beneficiaría de imágenes externas",
+    "apply_sfx": "explica si los SFX encajan con el tono",
+    "apply_background_music": "explica por qué SÍ o NO (un vlog íntimo puede no necesitarla)",
+    "apply_fade": "casi siempre SÍ"
+  }},
+
+  "color_grading": "uno de: cinematico | vibrante | minimalista | oscuro | neutral",
+
+  "caption_style": {{
+    "base_color": "#FFFFFF",
+    "highlight_color": "#FFFF00",
+    "font_size_pct": 7.5,
+    "position": "uno de: top | center | bottom_third | bottom",
+    "outline_thickness": 8,
+    "font_weight": "bold | regular",
+    "reason": "por qué este estilo encaja con el tono del vídeo"
+  }},
+
+  "caption_emphasis": [
+    {{
+      "timestamp": 5.0,
+      "duration": 1.0,
+      "color": "#FF3333",
+      "size_pct": 11,
+      "position": "center",
+      "reason": "punto culminante del mensaje"
+    }}
+  ],
+
+  "highlight_keywords": ["palabras", "CLAVE", "del", "texto"],
+
+  "zoom_moments": [
+    {{"timestamp": 1.5, "intensity": "subtle | medium | strong", "reason": "..."}}
+  ],
+
+  "text_overlays": [
     {{
       "timestamp": 5.2,
       "duration": 1.5,
-      "type": "tipo de animación",
-      "description": "qué animación añadir y por qué"
+      "text": "TEXTO 1-3 PALABRAS MAYÚSCULAS",
+      "position": "top | center | bottom",
+      "reason": "..."
     }}
   ],
-  "sound_effects": [
-    {{
-      "timestamp": 3.0,
-      "type": "tipo de efecto",
-      "description": "qué efecto añadir"
-    }}
-  ],
+
   "broll": [
     {{
       "timestamp": 10.0,
       "duration": 3.0,
-      "description": "qué imagen/vídeo complementario añadir",
-      "dalle_prompt": "prompt para DALL-E si hay que generarlo"
+      "description": "...",
+      "dalle_prompt": "prompt en inglés DALL-E 3",
+      "reason": "..."
     }}
   ],
-  "music": {{
-    "mood": "mood de la música",
-    "intensity": "intensidad (baja, media, alta, dinámica)"
-  }}
+
+  "sfx_events": [
+    {{
+      "timestamp": 0.1,
+      "type": "whoosh | pop | ding | impact",
+      "reason": "..."
+    }}
+  ],
+
+  "music": {{"mood": "chill | energico | epic | none", "intensity": "baja | media | alta"}}
 }}
+
+REGLAS DE ESTILO DE CAPTIONS (cada decisión basada en tono/contexto):
+- `caption_style.base_color`: blanco para alto contraste o color de marca si encaja.
+- `caption_style.highlight_color`: amarillo vivo (#FFFF00) clásico viral, o color de marca/tono.
+- `caption_style.font_size_pct`: 6.5-9.0 (% altura). Mayor para vídeos energéticos, menor para informativos.
+- `caption_style.position`: bottom_third (estándar), center solo si no tapa al sujeto, top para títulos.
+- `caption_emphasis`: SOLO para 1-3 momentos clave del mensaje (climax, punchline, CTA).
+
+REGLAS ESTRATÉGICAS:
+1. `decisions.*` son OBLIGATORIAS — decide cada una basándote en el contenido real.
+2. NO listes elementos en zoom_moments/text_overlays/broll/sfx_events si su `apply_*` es false.
+3. `text_overlays[].text` SIEMPRE 1-3 palabras MAYÚSCULAS, NUNCA una descripción.
+4. Si tono es CALMADO/ÍNTIMO → considera apply_zoom_punch_in=false, apply_sfx=false, apply_background_music=false.
+5. Si tono es ENERGICO/DIVERTIDO → SFX y zoom encajan bien.
+6. Si el vídeo es INFORMATIVO/TUTORIAL → text_overlays y B-roll suelen ayudar.
+7. B-roll solo si NO se ve al sujeto y el tema se beneficia de imagen externa.
+8. `highlight_keywords` deben aparecer en la transcripción real.
+9. Cada decisión TIENE que estar justificada en `decision_reasons`.
 """
 
     response = client.chat.completions.create(
