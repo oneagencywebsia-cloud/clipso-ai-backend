@@ -8,10 +8,16 @@ from app.core.config import settings
 
 class SupabaseClient:
     def __init__(self):
-        self.client: Client = create_client(
-            settings.supabase_url,
-            settings.supabase_key
-        )
+        self._client: Client | None = None
+
+    @property
+    def client(self) -> Client:
+        if self._client is None:
+            self._client = create_client(
+                settings.supabase_url,
+                settings.supabase_key
+            )
+        return self._client
 
     # ---------- Projects ----------
     def create_project(self, user_id: str, name: str, metadata: dict | None = None) -> dict:

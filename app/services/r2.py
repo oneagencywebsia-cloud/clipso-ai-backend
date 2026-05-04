@@ -14,18 +14,24 @@ class R2Client:
     """Cliente R2 para upload/download de vídeos"""
 
     def __init__(self):
-        self.client = boto3.client(
-            "s3",
-            endpoint_url=settings.r2_endpoint,
-            aws_access_key_id=settings.r2_access_key_id,
-            aws_secret_access_key=settings.r2_secret_access_key,
-            config=Config(
-                signature_version="s3v4",
-                region_name="auto",
-                retries={"max_attempts": 3, "mode": "standard"}
-            )
-        )
+        self._client = None
         self.bucket = settings.r2_bucket_name
+
+    @property
+    def client(self):
+        if self._client is None:
+            self._client = boto3.client(
+                "s3",
+                endpoint_url=settings.r2_endpoint,
+                aws_access_key_id=settings.r2_access_key_id,
+                aws_secret_access_key=settings.r2_secret_access_key,
+                config=Config(
+                    signature_version="s3v4",
+                    region_name="auto",
+                    retries={"max_attempts": 3, "mode": "standard"}
+                )
+            )
+        return self._client
 
     def upload_file(
         self,

@@ -1,4 +1,4 @@
-"""Redis Queue — encola y procesa jobs"""
+"""Redis Queue - encola y procesa jobs"""
 from redis import Redis
 from rq import Queue
 from loguru import logger
@@ -6,8 +6,22 @@ from loguru import logger
 from app.core.config import settings
 
 
-redis_conn = Redis.from_url(settings.redis_url)
-queue = Queue("clipso-pipeline", connection=redis_conn, default_timeout=3600)
+_redis_conn = None
+_queue = None
+
+
+def get_redis():
+    global _redis_conn
+    if _redis_conn is None:
+        _redis_conn = Redis.from_url(settings.redis_url)
+    return _redis_conn
+
+
+def get_queue():
+    global _queue
+    if _queue is None:
+        _queue = Queue("clipso-pipeline", connection=get_redis(), default_timeout=3600)
+    return _queue
 
 
 def enqueue_job(
@@ -17,6 +31,7 @@ def enqueue_job(
     parent_job_id: str | None = None
 ) -> str:
     """Encola un job de procesamiento de vídeo"""
+    queue = get_queue()
     rq_job = queue.enqueue_call(
         func="app.workers.pipeline.process_video_job",
         kwargs={
@@ -33,7 +48,8 @@ def enqueue_job(
 
 
 def get_queue_stats() -> dict:
-    """Estadísticas de la cola"""
+    """Estadisticas de la cola"""
+    queue = get_queue()
     return {
         "queued": queue.count,
         "started": queue.started_job_registry.count,

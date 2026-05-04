@@ -26,20 +26,20 @@ class Settings(BaseSettings):
     ]
 
     # Supabase
-    supabase_url: str
-    supabase_key: str
+    supabase_url: str = ""
+    supabase_key: str = ""
     supabase_jwt_secret: str = ""
 
     # Cloudflare R2
-    r2_account_id: str
-    r2_access_key_id: str
-    r2_secret_access_key: str
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
     r2_bucket_name: str = "clipso-videos"
     r2_endpoint_url: str = ""
     r2_public_url: str = ""
 
     # OpenAI
-    openai_api_key: str
+    openai_api_key: str = ""
 
     # Redis (queue)
     redis_url: str = "redis://localhost:6379/0"
