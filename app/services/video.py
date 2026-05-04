@@ -491,8 +491,8 @@ def cut_silences(
             af=f"aselect='{select_a}',asetpts=N/SR/TB",
             vcodec="libx264",
             acodec="aac",
-            preset="medium",
-            crf=18
+            preset="ultrafast",
+            crf=23
         )
         .overwrite_output()
         .run(quiet=True)
