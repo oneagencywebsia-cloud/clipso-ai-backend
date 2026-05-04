@@ -12,11 +12,11 @@ from app.schemas.models import HealthResponse
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"🚀 {settings.app_name} v{settings.app_version} arrancando...")
-    logger.info(f"📦 Environment: {settings.environment}")
-    logger.info(f"🌐 R2 endpoint: {settings.r2_endpoint}")
+    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+    logger.info(f"Environment: {settings.environment}")
+    logger.info(f"R2 endpoint: {settings.r2_endpoint}")
     yield
-    logger.info("👋 Apagando servicio...")
+    logger.info("Shutting down service")
 
 
 app = FastAPI(
@@ -38,7 +38,7 @@ app.add_middleware(
     expose_headers=["*"]
 )
 
-logger.info("✅ CORS configured — allowing all origins (DEBUG MODE)")
+logger.info("CORS configured - allowing all origins (DEBUG MODE)")
 
 
 @app.get("/", tags=["health"])
