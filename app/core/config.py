@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: list[str] = [
         "http://localhost:3000",
+        "http://localhost:3001",
         "https://clipso.ai",
         "https://app.clipso.ai",
         "https://one-agency-clipso-ai.94rrjd.easypanel.host"
