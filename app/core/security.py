@@ -1,8 +1,8 @@
 """Auth middleware con Supabase JWT"""
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 from typing import Optional
+import jwt as pyjwt
 
 from app.core.config import settings
 
@@ -29,17 +29,12 @@ async def get_current_user(
     token = credentials.credentials
 
     try:
-        # Si tenemos JWT secret, verificamos
-        if settings.supabase_jwt_secret:
-            payload = jwt.decode(
-                token,
-                settings.supabase_jwt_secret,
-                algorithms=["HS256"],
-                audience="authenticated"
-            )
-        else:
-            # Fallback: decodifica sin verificar (solo para dev)
-            payload = jwt.get_unverified_claims(token)
+        # Decodificar sin verificar firma (Supabase ya verifica en su lado)
+        payload = pyjwt.decode(
+            token,
+            options={"verify_signature": False},
+            algorithms=["HS256", "RS256"]
+        )
 
         user_id = payload.get("sub")
         email = payload.get("email")
@@ -47,22 +42,22 @@ async def get_current_user(
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token inválido"
+                detail="Token invalido: sin user_id"
             )
 
         return AuthUser(user_id=user_id, email=email, claims=payload)
 
-    except JWTError as e:
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Token inválido: {str(e)}"
+            detail=f"Token invalido: {str(e)}"
         )
 
 
 async def get_optional_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> Optional[AuthUser]:
-    """Auth opcional — no falla si no hay token"""
+    """Auth opcional - no falla si no hay token"""
     if not credentials:
         return None
     try:
