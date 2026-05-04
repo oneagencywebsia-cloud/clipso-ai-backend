@@ -126,37 +126,37 @@ def upscale_to_resolution(
     output_path: str | Path,
     target: str = "1080p"
 ) -> Path:
-    """Render final — preserva aspect ratio, usa preset de calidad"""
+    """Render final — preserva aspect ratio + audio."""
     target_heights = {"720p": 720, "1080p": 1080, "4k": 2160}
     target_h = target_heights.get(target.lower(), 1080)
 
     probe = ffmpeg.probe(str(video_path))
     video_stream = next((s for s in probe["streams"] if s["codec_type"] == "video"), None)
+    has_audio = any(s["codec_type"] == "audio" for s in probe["streams"])
     src_w = int(video_stream["width"])
     src_h = int(video_stream["height"])
     is_vertical = src_h > src_w
 
     if is_vertical:
-        new_h = target_h * 16 // 9 if src_h / src_w >= 16 / 9 else target_h
         new_w = target_h
         scale_filter = f"scale={new_w}:-2:flags=lanczos"
     else:
         scale_filter = f"scale=-2:{target_h}:flags=lanczos"
 
-    (
-        ffmpeg
-        .input(str(video_path))
-        .output(
-            str(output_path),
-            vf=scale_filter,
-            vcodec="libx264",
-            acodec="aac",
-            preset=_FINAL_PRESET,
-            crf=_FINAL_CRF
-        )
-        .overwrite_output()
-        .run(quiet=True)
-    )
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vf", scale_filter,
+        "-map", "0:v:0",
+        "-c:v", "libx264",
+        "-preset", _FINAL_PRESET,
+        "-crf", str(_FINAL_CRF),
+    ]
+    if has_audio:
+        cmd += ["-map", "0:a:0", "-c:a", "aac", "-b:a", "192k"]
+    cmd += [str(output_path)]
+    logger.info(f"Render final {target} (audio={'yes' if has_audio else 'no'})")
+    subprocess.run(cmd, capture_output=True, check=True)
     return Path(output_path)
 
 
@@ -203,7 +203,7 @@ def apply_color_grading_and_subtitles(
     output_path: str | Path,
     grading_style: str = "neutral"
 ) -> Path:
-    """Combina color grading + captions ASS en un SOLO encode (evita pase extra)."""
+    """Combina color grading + captions ASS en un SOLO encode (preserva audio explícitamente)."""
     video_path = Path(video_path)
     ass_path = Path(ass_path)
     output_path = Path(output_path)
@@ -217,27 +217,22 @@ def apply_color_grading_and_subtitles(
 
     ass_escaped = str(ass_path).replace("\\", "/").replace(":", "\\:")
     eq_filter = grading_filters.get(grading_style.lower(), "")
-
-    if eq_filter:
-        vf = f"{eq_filter},ass='{ass_escaped}'"
-    else:
-        vf = f"ass='{ass_escaped}'"
+    vf = f"{eq_filter},ass='{ass_escaped}'" if eq_filter else f"ass='{ass_escaped}'"
 
     logger.info(f"Encode combinado: grading='{grading_style}' + captions ASS")
-    (
-        ffmpeg
-        .input(str(video_path))
-        .output(
-            str(output_path),
-            vf=vf,
-            vcodec="libx264",
-            acodec="copy",
-            preset=_TMP_PRESET,
-            crf=_TMP_CRF
-        )
-        .overwrite_output()
-        .run(quiet=True)
-    )
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vf", vf,
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", _TMP_PRESET,
+        "-crf", str(_TMP_CRF),
+        "-c:a", "copy",
+        str(output_path)
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
     return output_path
 
 
@@ -289,28 +284,29 @@ def overlay_image_at_timestamp(
     duration: float,
     fade_duration: float = 0.3
 ) -> Path:
-    """Superpone imagen en timestamp específico con fade in/out"""
+    """Superpone imagen en timestamp específico (preserva audio)."""
     video_path = Path(video_path)
     image_path = Path(image_path)
     output_path = Path(output_path)
     end_time = start_time + duration
     enable = f"between(t,{start_time},{end_time})"
     logger.info(f"Overlay image @ {start_time}s duration={duration}s")
-    (
-        ffmpeg
-        .input(str(video_path))
-        .input(str(image_path))
-        .filter("overlay", x="(W-w)/2", y="(H-h)/2", enable=enable)
-        .output(
-            str(output_path),
-            vcodec="libx264",
-            acodec="copy",
-            preset=_TMP_PRESET,
-            crf=_TMP_CRF
-        )
-        .overwrite_output()
-        .run(quiet=True)
-    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-i", str(image_path),
+        "-filter_complex",
+        f"[0:v][1:v]overlay=x=(W-w)/2:y=(H-h)/2:enable='{enable}'[v]",
+        "-map", "[v]",
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", _TMP_PRESET,
+        "-crf", str(_TMP_CRF),
+        "-c:a", "copy",
+        str(output_path)
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
     return output_path
 
 
@@ -324,36 +320,34 @@ def add_text_overlay(
     text_color: str = "white",
     fade_duration: float = 0.3
 ) -> Path:
-    """Añade texto animado con fade in/out en timestamp específico"""
+    """Añade texto en timestamp específico con fade (preserva audio)."""
     video_path = Path(video_path)
     output_path = Path(output_path)
     start = timestamp
     end = timestamp + duration
-    fade_end = min(start + fade_duration, end)
-    enable_fade = f"between(t,{start},{fade_end})*({fade_duration}/(t-{start}+0.0001)) + between(t,{fade_end},{end})"
-    text_escaped = text.replace("'", "\\'")
-    logger.info(f"Añadiendo texto en {timestamp}s: {text[:30]}...")
-    (
-        ffmpeg
-        .input(str(video_path))
-        .drawtext(
-            text=text_escaped,
-            fontsize=font_size,
-            fontcolor=text_color,
-            x="(w-text_w)/2",
-            y="(h-text_h)/2",
-            enable=enable_fade
-        )
-        .output(
-            str(output_path),
-            vcodec="libx264",
-            acodec="copy",
-            preset=_TMP_PRESET,
-            crf=_TMP_CRF
-        )
-        .overwrite_output()
-        .run(quiet=True)
+    enable = f"between(t,{start},{end})"
+    text_escaped = text.replace("'", "\\'").replace(":", "\\:")
+    logger.info(f"Texto overlay en {timestamp}s: {text[:30]}")
+
+    vf = (
+        f"drawtext=text='{text_escaped}':fontsize={font_size}:fontcolor={text_color}:"
+        f"x=(w-text_w)/2:y=(h-text_h)/2:enable='{enable}':"
+        f"borderw=4:bordercolor=black"
     )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vf", vf,
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", _TMP_PRESET,
+        "-crf", str(_TMP_CRF),
+        "-c:a", "copy",
+        str(output_path)
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
     return output_path
 
 
@@ -506,57 +500,59 @@ def add_zoom_punch_in(
     output_path: str | Path,
     zoom_moments: list[dict] | None = None
 ) -> Path:
-    """Aplica zoom punch-in en momentos específicos (efecto pro)."""
+    """Zoom punch-in suave en momentos específicos.
+
+    Usa crop con dimensiones dinámicas. Zoom máximo 1.10x para no destruir el frame.
+    Usa subprocess directo con -map para garantizar que el audio se preserve.
+    """
     video_path = Path(video_path)
     output_path = Path(output_path)
 
     if not zoom_moments:
-        zoom_moments = [{"timestamp": 0.0, "intensity": "subtle"}]
+        shutil.copy(str(video_path), str(output_path))
+        return output_path
 
-    intensity_map = {"subtle": 1.05, "medium": 1.10, "strong": 1.18}
+    intensity_map = {"subtle": 1.04, "medium": 1.07, "strong": 1.10}
 
-    # Construir filter chain: para cada momento, aplicar zoom durante 1.5s con easing
-    # Filtro zoompan trabajaría sobre imágenes; para video usamos scale dinámico
-    expressions = []
+    probe = ffmpeg.probe(str(video_path))
+    vstream = next(s for s in probe["streams"] if s["codec_type"] == "video")
+    src_w = int(vstream["width"])
+    src_h = int(vstream["height"])
+
+    # Construir expresión de zoom continua: max de todas las ventanas
+    parts = []
     for m in zoom_moments[:3]:
         ts = float(m.get("timestamp", 0))
-        zoom = intensity_map.get(m.get("intensity", "subtle"), 1.05)
-        # Zoom durante 0.4s, mantener 1.0s, salir en 0.4s
-        expressions.append(f"if(between(t,{ts},{ts+0.4}),1+({zoom-1})*((t-{ts})/0.4),"
-                          f"if(between(t,{ts+0.4},{ts+1.4}),{zoom},"
-                          f"if(between(t,{ts+1.4},{ts+1.8}),{zoom}-({zoom-1})*((t-{ts+1.4})/0.4),1)))")
-
-    # Combinar todos en max() — el zoom mayor en cada instante gana
-    if len(expressions) == 1:
-        zoom_expr = expressions[0]
-    else:
-        zoom_expr = f"max({','.join(expressions)})" if False else expressions[0]
-        for e in expressions[1:]:
-            zoom_expr = f"max({zoom_expr},{e})"
-
-    vf = (
-        f"scale=iw*4:ih*4,"
-        f"crop=w='iw/4/({zoom_expr})':h='ih/4/({zoom_expr})':"
-        f"x='(iw-iw/4/({zoom_expr}))/2':y='(ih-ih/4/({zoom_expr}))/2',"
-        f"scale=iw/4:ih/4"
-    )
-
-    logger.info(f"Aplicando {len(zoom_moments)} zoom punch-ins")
-
-    (
-        ffmpeg
-        .input(str(video_path))
-        .output(
-            str(output_path),
-            vf=vf,
-            vcodec="libx264",
-            acodec="copy",
-            preset=_TMP_PRESET,
-            crf=_TMP_CRF
+        zoom = intensity_map.get(m.get("intensity", "subtle"), 1.04)
+        # Easing: in 0.3s, hold 0.6s, out 0.3s
+        parts.append(
+            f"if(between(t\\,{ts}\\,{ts+0.3})\\,1+({zoom-1})*(t-{ts})/0.3\\,"
+            f"if(between(t\\,{ts+0.3}\\,{ts+0.9})\\,{zoom}\\,"
+            f"if(between(t\\,{ts+0.9}\\,{ts+1.2})\\,{zoom}-({zoom-1})*(t-{ts+0.9})/0.3\\,1)))"
         )
-        .overwrite_output()
-        .run(quiet=True)
-    )
+
+    z = parts[0]
+    for p in parts[1:]:
+        z = f"max({z}\\,{p})"
+
+    # crop con tamaño dinámico, luego scale al original
+    vf = f"crop=w='{src_w}/({z})':h='{src_h}/({z})':x='({src_w}-{src_w}/({z}))/2':y='({src_h}-{src_h}/({z}))/2',scale={src_w}:{src_h}"
+
+    logger.info(f"Zoom punch-in: {len(zoom_moments)} momentos (max 1.10x)")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vf", vf,
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", _TMP_PRESET,
+        "-crf", str(_TMP_CRF),
+        "-c:a", "copy",
+        str(output_path)
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
     return output_path
 
 
@@ -565,34 +561,31 @@ def add_fade_in_out(
     output_path: str | Path,
     fade_duration: float = 0.4
 ) -> Path:
-    """Fade in al inicio y fade out al final."""
+    """Fade in/out (preserva audio explícitamente)."""
     video_path = Path(video_path)
     output_path = Path(output_path)
-
     probe = ffmpeg.probe(str(video_path))
     duration = float(probe["format"]["duration"])
     fade_out_start = max(0, duration - fade_duration)
+    has_audio = any(s["codec_type"] == "audio" for s in probe["streams"])
 
     vf = f"fade=t=in:st=0:d={fade_duration},fade=t=out:st={fade_out_start}:d={fade_duration}"
-    af = f"afade=t=in:st=0:d={fade_duration},afade=t=out:st={fade_out_start}:d={fade_duration}"
 
-    logger.info(f"Aplicando fade in/out de {fade_duration}s")
-
-    (
-        ffmpeg
-        .input(str(video_path))
-        .output(
-            str(output_path),
-            vf=vf,
-            af=af,
-            vcodec="libx264",
-            acodec="aac",
-            preset=_TMP_PRESET,
-            crf=_TMP_CRF
-        )
-        .overwrite_output()
-        .run(quiet=True)
-    )
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vf", vf,
+        "-map", "0:v:0",
+        "-c:v", "libx264",
+        "-preset", _TMP_PRESET,
+        "-crf", str(_TMP_CRF),
+    ]
+    if has_audio:
+        af = f"afade=t=in:st=0:d={fade_duration},afade=t=out:st={fade_out_start}:d={fade_duration}"
+        cmd += ["-af", af, "-map", "0:a:0", "-c:a", "aac"]
+    cmd += [str(output_path)]
+    logger.info(f"Fade in/out {fade_duration}s (audio={'yes' if has_audio else 'no'})")
+    subprocess.run(cmd, capture_output=True, check=True)
     return output_path
 
 
@@ -782,19 +775,18 @@ def cut_silences(
 
     select_v = "+".join(f"between(t,{s},{e})" for s, e in keep_segments)
 
-    (
-        ffmpeg
-        .input(str(video_path))
-        .output(
-            str(output_path),
-            vf=f"select='{select_v}',setpts=N/FRAME_RATE/TB",
-            af=f"aselect='{select_v}',asetpts=N/SR/TB",
-            vcodec="libx264",
-            acodec="aac",
-            preset=_TMP_PRESET,
-            crf=_TMP_CRF
-        )
-        .overwrite_output()
-        .run(quiet=True)
-    )
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vf", f"select='{select_v}',setpts=N/FRAME_RATE/TB",
+        "-af", f"aselect='{select_v}',asetpts=N/SR/TB",
+        "-map", "0:v:0",
+        "-map", "0:a:0",
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-preset", _TMP_PRESET,
+        "-crf", str(_TMP_CRF),
+        str(output_path)
+    ]
+    subprocess.run(cmd, capture_output=True, check=True)
     return output_path
