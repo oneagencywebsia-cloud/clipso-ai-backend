@@ -136,6 +136,10 @@ CATÁLOGO DE RECURSOS DISPONIBLES (úsalos):
   - "counter": número animado de A→B (estadísticas)
   - "call_out": flecha + texto apuntando a algo (tutoriales)
   - "zoom_shake_text": texto con scale-shake intenso (PUNCHLINE)
+  - "highlight_box": rectángulo pulsante para destacar elementos
+  - "arrow_pointer": flecha animada apuntando a ubicación
+  - "progress_bar": barra de progreso animada (para tutoriales/procesos)
+  - "glitch_transition": efecto glitch RGB-split (transiciones)
 
 🎼 MÚSICA POR MOOD:
   - "chill_lofi", "epic_cinematic", "upbeat_energetic", "corporate_clean", "tech_modern", "none"
@@ -147,8 +151,22 @@ JSON con esta estructura:
 
 {{
   "summary": "resumen 1 frase",
+  "video_type": "talking-head | tutorial | vlog | demo | comedy | story",
   "tone": "uno de: energico | calmado | informativo | emotivo | divertido | profesional",
   "pace": "uno de: rapido | medio | lento",
+
+  "key_moments": [
+    {{
+      "timestamp": 5.2,
+      "type": "revelacion | punchline | enfasis | cta | hook | transicion",
+      "lead_time": 2.0,
+      "sfx_buildup": "riser_short | riser_long",
+      "sfx_impact": "impact_high | impact_low | boom | ding",
+      "visual": "zoom_punch | motion_graphic | caption_emphasis",
+      "text": "TEXTO CORTO OPCIONAL",
+      "reason": "por qué este es un momento clave"
+    }}
+  ],
 
   "decisions": {{
     "apply_jump_cuts": true,
@@ -241,46 +259,51 @@ JSON con esta estructura:
   "ambient_track": "tiktok_ambient_beat | cinematic_drone | asmr_room_tone | synth_pad_ethereal | subtle_pulse | none"
 }}
 
-REGLAS ESTRATÉGICAS (OBLIGATORIAS):
+REGLAS ESTRATÉGICAS v2 (OBLIGATORIAS — SIN EXCEPCIONES):
 
-1. CAPTIONS: SIEMPRE apply_captions=true si hay habla. Elige preset según tono.
+1. KEY_MOMENTS — MINIMO GARANTIZADO:
+   - Vídeo < 10s: MÍNIMO 1 key_moment
+   - Vídeo 10-20s: MÍNIMO 2 key_moments (1 cada 8s)
+   - Vídeo 20-30s: MÍNIMO 3 key_moments (1 cada 8s)
+   - Vídeo > 30s: MÍNIMO 4-5 key_moments (1 cada 8s, detecta revelaciones, datos, CTAs)
 
-2. MOTION GRAPHICS — sé GENEROSO:
+2. CAPTIONS: apply_captions SIEMPRE TRUE si hay habla.
+
+3. MOTION GRAPHICS — AGRESIVO:
    - Vídeo > 10s: MÍNIMO 1 motion graphic
    - Vídeo > 20s: MÍNIMO 2 motion graphics
-   - Vídeo > 30s: MÍNIMO 3 motion graphics + considerar 1 B-roll
-   - Cada motion graphic DEBE tener sfx_sync para sonido sincronizado
-   - title_card al inicio si hay un concepto fuerte
-   - zoom_shake_text en punchlines/revelaciones
-   - call_out para tutoriales
-   - counter cuando se mencionan números/estadísticas
+   - Vídeo > 30s: MÍNIMO 3-4 motion graphics
+   - TIPOS: title_card (inicio), zoom_shake_text (punchlines), counter (números), lower_third (presentaciones)
+   - CADA motion graphic debe tener parámetros exactos (no genéricos)
 
-3. SFX EVENTS — SIEMPRE incluye:
-   - 1 sfx al inicio (whoosh/boom según tono)
-   - 1 riser + 1 impact en CADA momento clave del mensaje (revelación, dato, CTA)
-   - Mínimo 1 cada 8 segundos
-   - El click_soft en captions es AUTOMÁTICO (no lo listes)
+4. SFX EVENTS — INYECCIÓN MASIVA:
+   - SIEMPRE 1 sfx explosivo al inicio (boom | whoosh_long)
+   - CADA key_moment: 1 riser (buildup) + 1 impact exacto en el momento
+   - Mínimo 1 SFX cada 5-8 segundos
+   - El click_soft en captions es AUTOMÁTICO (suena SIEMPRE, no lo listes en sfx_events)
 
-4. ZOOM PUNCH-INS:
-   - SIEMPRE apply_zoom_punch_in=true salvo en vídeos muy calmados
-   - Mínimo 1 zoom cada 10 segundos
-   - intensity: subtle (default), medium (énfasis), strong (revelación)
+5. ZOOM PUNCH-INS (apply_zoom_punch_in):
+   - SIEMPRE true excepto vlogs muy íntimos
+   - Mínimo 1 cada 10 segundos en videos dinámicos
+   - intensity: subtle (por defecto), medium (énfasis), strong (revelación/punchline)
 
-5. MÚSICA + AMBIENT:
-   - ambient_track: SIEMPRE elige uno (no "none") — da textura premium imperceptible
-   - music.track: solo si encaja con el tono
-   - Vlog íntimo → ambient_track="asmr_room_tone", music="none"
-   - Tutorial → ambient_track="subtle_pulse", music="corporate_clean"
-   - Comedy/hype → ambient_track="tiktok_ambient_beat", music="upbeat_energetic"
-   - Storytelling → ambient_track="cinematic_drone", music="epic_cinematic"
+6. MÚSICA + AMBIENT — TEXTURE OBLIGATORIA:
+   - ambient_track: NUNCA "none" — SIEMPRE elige uno según tono
+   - Vlog íntimo → asmr_room_tone + music none
+   - Tutorial → subtle_pulse + music corporate_clean
+   - Comedy/hype → tiktok_ambient_beat + music upbeat_energetic
+   - Storytelling → cinematic_drone + music epic_cinematic
 
-6. CAPTION_EMPHASIS: usa para 1-3 momentos clave (climax, punchline, CTA).
+7. COLOR GRADING: cinematic | vibrante | minimalista (elige según mood, NO neutro)
 
-7. text_overlays: 1-3 palabras MAYÚSCULAS, NUNCA descripciones.
+8. CAPTION_EMPHASIS: 1-3 momentos clave máximo (climax, dato importante, CTA)
 
-8. highlight_keywords: deben aparecer en la transcripción.
+9. text_overlays: 1-3 palabras MAYÚSCULAS solamente (NO descripciones)
 
-9. NO seas conservador. SIEMPRE inclínate por aplicar el efecto si aporta dinamismo.
+10. BROLL DALL-E: máximo 2 imágenes (si video > 20s, mínimo 1)
+
+11. ABSOLUTA PRIORIDAD: NO seas conservador. Si un efecto aporta dinamismo, aplícalo.
+    El default es SIEMPRE "sí" a menos que afecte negativamente el mensaje principal.
 """
 
     response = client.chat.completions.create(

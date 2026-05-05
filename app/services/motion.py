@@ -54,7 +54,7 @@ def render_motion_graphics_ass(
     """Genera un único archivo ASS con TODAS las motion graphics del video.
 
     Cada motion graphic en `motion_graphics` debe tener:
-        - type: title_card | text_pop | lower_third | counter | highlight_box | zoom_shake_text | call_out
+        - type: title_card | text_pop | lower_third | counter | highlight_box | zoom_shake_text | call_out | arrow_pointer | progress_bar | glitch_transition
         - timestamp: float
         - duration: float
         - params: dict con parámetros específicos del template
@@ -99,6 +99,14 @@ def render_motion_graphics_ass(
                 events.extend(_render_call_out(ts, dur, params, video_width, video_height))
             elif mg_type == "zoom_shake_text":
                 events.extend(_render_zoom_shake_text(ts, dur, params, video_width, video_height))
+            elif mg_type == "highlight_box":
+                events.extend(_render_highlight_box(ts, dur, params, video_width, video_height))
+            elif mg_type == "arrow_pointer":
+                events.extend(_render_arrow_pointer(ts, dur, params, video_width, video_height))
+            elif mg_type == "progress_bar":
+                events.extend(_render_progress_bar(ts, dur, params, video_width, video_height))
+            elif mg_type == "glitch_transition":
+                events.extend(_render_glitch_transition(ts, dur, params, video_width, video_height))
             else:
                 logger.warning(f"Motion graphic tipo desconocido: {mg_type}")
         except Exception as e:
@@ -225,3 +233,94 @@ def _render_zoom_shake_text(ts, dur, params, vw, vh):
         f"\\c{color}\\fs{size}"
     )
     return [f"Dialogue: 1,{_fmt_t(ts)},{_fmt_t(ts+dur)},TextPop,,0,0,0,,{{{anim}}}{text}"]
+
+
+def _render_highlight_box(ts, dur, params, vw, vh):
+    """Rectángulo con borde pulsante para destacar elementos."""
+    x = int(params.get("x", vw // 4))
+    y = int(params.get("y", vh // 4))
+    w = int(params.get("w", vw // 2))
+    h = int(params.get("h", vh // 3))
+    color = _hex_to_ass(params.get("color", "#00FF00"))
+
+    anim = (
+        f"\\fad(100,100)"
+        f"\\c{color}"
+        f"\\t(0,{int(dur*1000)//2},\\alpha&H00&)"
+        f"\\t({int(dur*1000)//2},{int(dur*1000)},\\alpha&H80&)"
+    )
+
+    rect = f"{{\\p1}}{{{anim}}}m {x} {y} l {x+w} {y} l {x+w} {y+h} l {x} {y+h}{{\\p0}}"
+    return [f"Dialogue: 1,{_fmt_t(ts)},{_fmt_t(ts+dur)},HighlightBox,,0,0,0,,{rect}"]
+
+
+def _render_arrow_pointer(ts, dur, params, vw, vh):
+    """Flecha animada apuntando a una ubicación específica."""
+    target_x = int(params.get("target_x", vw // 2))
+    target_y = int(params.get("target_y", vh // 2))
+    color = _hex_to_ass(params.get("color", "#FFFF00"))
+
+    arrow_x = target_x - 80
+    arrow_y = target_y
+
+    anim = (
+        f"\\fad(100,100)"
+        f"\\pos({arrow_x},{arrow_y})"
+        f"\\c{color}"
+        f"\\t(0,{int(dur*1000)},\\fscx100\\fscy100)"
+    )
+    return [f"Dialogue: 1,{_fmt_t(ts)},{_fmt_t(ts+dur)},CallOut,,0,0,0,,{{{anim}}}→"]
+
+
+def _render_progress_bar(ts, dur, params, vw, vh):
+    """Barra de progreso animada."""
+    start_pct = float(params.get("start_pct", 0))
+    end_pct = float(params.get("end_pct", 100))
+    color = _hex_to_ass(params.get("color", "#00FFFF"))
+
+    bar_y = int(params.get("position", "top") == "top" and 50 or vh - 50)
+    bar_x_start = int(vw * 0.1)
+    bar_width = int(vw * 0.8)
+
+    start_width = int(bar_width * start_pct / 100)
+    end_width = int(bar_width * end_pct / 100)
+
+    anim = (
+        f"\\fad(80,80)"
+        f"\\c{color}"
+        f"\\t(0,{int(dur*1000)},\\fscx{int(100 + (end_pct - start_pct))})"
+    )
+
+    bar_rect = f"{{\\p1}}{{{anim}}}m {bar_x_start} {bar_y} l {bar_x_start + end_width} {bar_y}{{\\p0}}"
+    return [f"Dialogue: 1,{_fmt_t(ts)},{_fmt_t(ts+dur)},HighlightBox,,0,0,0,,{bar_rect}"]
+
+
+def _render_glitch_transition(ts, dur, params, vw, vh):
+    """Efecto glitch RGB-split para transiciones."""
+    intensity = float(params.get("intensity", 0.5))
+    color_r = _hex_to_ass(params.get("color_r", "#FF0000"))
+    color_g = _hex_to_ass(params.get("color_g", "#00FF00"))
+    color_b = _hex_to_ass(params.get("color_b", "#0000FF"))
+
+    offset = int(5 * intensity)
+
+    events = []
+    keyframes = 6
+    frame_dur = dur / keyframes
+
+    for i in range(keyframes):
+        frame_start = ts + i * frame_dur
+        frame_end = ts + (i + 1) * frame_dur
+
+        offset_x = offset if i % 2 == 0 else -offset
+        offset_y = offset if i % 3 == 0 else -offset
+
+        anim = (
+            f"\\pos({vw//2 + offset_x},{vh//2 + offset_y})"
+            f"\\alpha&H00&"
+            f"\\fad(0,0)"
+        )
+
+        events.append(f"Dialogue: 1,{_fmt_t(frame_start)},{_fmt_t(frame_end)},TextPop,,0,0,0,,{{{anim}}}GLITCH")
+
+    return events

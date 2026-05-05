@@ -51,22 +51,23 @@ def _build_auto_sfx_events(
     zoom_moments: list[dict],
     motion_graphics: list[dict],
     llm_sfx: list[dict],
-    duration: float
+    duration: float,
+    key_moments: list[dict] | None = None
 ) -> list[dict]:
-    """Construye lista completa de SFX events:
+    """Construye lista completa de SFX events (v2 con key_moments):
     - Click suave automático en cada caption chunk
     - Whoosh automático en cada zoom punch-in
     - Pop/sync automático en cada motion graphic (según sfx_sync)
-    - SFX estratégicos del LLM (riser, impact, boom)
+    - SFX estratégicos del LLM (riser buildup + impact en key_moments)
     """
     events = []
 
-    # 1. Auto-clicks en cada caption chunk (volumen muy bajo)
+    # 1. Auto-clicks en CADA caption chunk (Submagic style — volumen 0.12)
     click_path = _pick_sfx("click_soft")
     if click_path:
         for ts in chunk_starts:
             if 0 <= ts <= duration:
-                events.append({"path": str(click_path), "timestamp": ts, "volume": 0.08})
+                events.append({"path": str(click_path), "timestamp": ts, "volume": 0.12})
 
     # 2. Auto-whoosh en cada zoom
     whoosh_path = _pick_sfx("whoosh")
@@ -87,15 +88,45 @@ def _build_auto_sfx_events(
             if 0 <= ts <= duration:
                 events.append({"path": str(sync_path), "timestamp": ts, "volume": 0.4})
 
-    # 4. SFX estratégicos del LLM (riser, impact, boom...)
-    for ev in llm_sfx:
-        sfx_type = ev.get("type", "pop")
-        sfx_path = _pick_sfx(sfx_type)
-        if sfx_path:
-            ts = float(ev.get("timestamp", 0))
+    # 4. SFX estratégicos del LLM v2 (key_moments con riser buildup + impact)
+    if key_moments:
+        for moment in key_moments:
+            ts = float(moment.get("timestamp", 0))
             if 0 <= ts <= duration:
-                volume = float(ev.get("volume", 0.5))
-                events.append({"path": str(sfx_path), "timestamp": ts, "volume": volume})
+                # Riser buildup (lead_time segundos antes)
+                lead_time = float(moment.get("lead_time", 0))
+                sfx_buildup = moment.get("sfx_buildup")
+                if sfx_buildup and lead_time > 0:
+                    riser_path = _pick_sfx(sfx_buildup)
+                    if riser_path:
+                        events.append({
+                            "path": str(riser_path),
+                            "timestamp": ts - lead_time,
+                            "volume": 0.55,
+                            "reason": f"buildup para {moment.get('type')}"
+                        })
+
+                # Impact exacto en el momento
+                sfx_impact = moment.get("sfx_impact")
+                if sfx_impact:
+                    impact_path = _pick_sfx(sfx_impact)
+                    if impact_path:
+                        events.append({
+                            "path": str(impact_path),
+                            "timestamp": ts,
+                            "volume": 0.60,
+                            "reason": f"{moment.get('type')} impact"
+                        })
+    else:
+        # Fallback: procesar sfx_events tradicionales (si no hay key_moments)
+        for ev in llm_sfx:
+            sfx_type = ev.get("type", "pop")
+            sfx_path = _pick_sfx(sfx_type)
+            if sfx_path:
+                ts = float(ev.get("timestamp", 0))
+                if 0 <= ts <= duration:
+                    volume = float(ev.get("volume", 0.5))
+                    events.append({"path": str(sfx_path), "timestamp": ts, "volume": volume})
 
     return events
 
@@ -304,16 +335,18 @@ def process_video_job(
             update_progress(job_id, 90)
 
             # Paso 12: SFX events combinados (90% → 92%)
-            # Auto: clicks en cada caption + whoosh en zooms + pop en motion graphics
-            # LLM: riser, impact, boom en momentos clave
+            # Auto: clicks en CADA caption + whoosh en zooms + pop en motion graphics
+            # LLM v2: riser buildup + impact en key_moments
             duration_now = video.get_video_info(stage).get("duration", 0)
+            key_moments = plan_data.get("key_moments", []) if apply_sfx else []
             llm_sfx = plan_data.get("sfx_events", []) if apply_sfx else []
             all_sfx_events = _build_auto_sfx_events(
                 chunk_starts=chunk_starts,
                 zoom_moments=zoom_moments,
                 motion_graphics=motion_graphics_list,
                 llm_sfx=llm_sfx,
-                duration=duration_now
+                duration=duration_now,
+                key_moments=key_moments
             )
             if all_sfx_events:
                 try:
