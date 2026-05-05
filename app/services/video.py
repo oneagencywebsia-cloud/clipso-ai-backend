@@ -393,26 +393,27 @@ def _position_to_alignment(position: str) -> tuple[int, float]:
 
 
 # Presets de estilos de captions (catálogo que el LLM elige)
+# Todos aumentados al máximo: tamaños +20%, outlines más gruesos, sombras más profundas
 CAPTION_STYLE_PRESETS = {
     "tiktok_yellow": {
         "fontname": "Impact",
         "base_color": "#FFFFFF",
         "highlight_color": "#FFFF00",
         "outline_color": "#000000",
-        "font_size_pct": 7.0,
-        "outline": 8,
-        "shadow": 2,
+        "font_size_pct": 8.5,   # +1.5 vs anterior
+        "outline": 12,           # outline ultra-grueso
+        "shadow": 4,
         "position": "bottom_third",
         "weight": 1,
     },
     "mrbeast_bold": {
         "fontname": "Arial Black",
         "base_color": "#FFFFFF",
-        "highlight_color": "#FF3333",
+        "highlight_color": "#FF2222",
         "outline_color": "#000000",
-        "font_size_pct": 8.0,
-        "outline": 10,
-        "shadow": 3,
+        "font_size_pct": 9.5,   # +1.5 vs anterior — MAXIMO IMPACTO
+        "outline": 14,
+        "shadow": 4,
         "position": "bottom_third",
         "weight": 1,
     },
@@ -420,11 +421,11 @@ CAPTION_STYLE_PRESETS = {
         "fontname": "Arial",
         "base_color": "#FFFFFF",
         "highlight_color": "#00FFFF",
-        "outline_color": "#000000",
-        "font_size_pct": 5.5,
-        "outline": 4,
-        "shadow": 1,
-        "position": "bottom",
+        "outline_color": "#111111",
+        "font_size_pct": 7.0,   # +1.5 vs anterior
+        "outline": 6,
+        "shadow": 2,
+        "position": "bottom_third",
         "weight": 1,
     },
     "neon_cyber": {
@@ -432,9 +433,9 @@ CAPTION_STYLE_PRESETS = {
         "base_color": "#00FFFF",
         "highlight_color": "#FF00FF",
         "outline_color": "#000000",
-        "font_size_pct": 7.0,
-        "outline": 6,
-        "shadow": 4,
+        "font_size_pct": 8.5,   # +1.5 vs anterior
+        "outline": 10,
+        "shadow": 6,            # sombra grande para efecto glow
         "position": "bottom_third",
         "weight": 1,
     },
@@ -442,10 +443,10 @@ CAPTION_STYLE_PRESETS = {
         "fontname": "Impact",
         "base_color": "#FFFFFF",
         "highlight_color": "#FFD700",
-        "outline_color": "#FF0000",
-        "font_size_pct": 7.5,
-        "outline": 8,
-        "shadow": 2,
+        "outline_color": "#CC0000",
+        "font_size_pct": 9.0,   # +1.5 vs anterior
+        "outline": 12,
+        "shadow": 3,
         "position": "bottom_third",
         "weight": 1,
     },
@@ -453,10 +454,10 @@ CAPTION_STYLE_PRESETS = {
         "fontname": "Georgia",
         "base_color": "#F5F5F5",
         "highlight_color": "#D4AF37",
-        "outline_color": "#000000",
-        "font_size_pct": 6.0,
-        "outline": 3,
-        "shadow": 2,
+        "outline_color": "#111111",
+        "font_size_pct": 7.5,   # +1.5 vs anterior
+        "outline": 5,
+        "shadow": 3,
         "position": "bottom_third",
         "weight": 0,
     },
@@ -465,9 +466,9 @@ CAPTION_STYLE_PRESETS = {
         "base_color": "#FFFFFF",
         "highlight_color": "#FF6B00",
         "outline_color": "#000000",
-        "font_size_pct": 7.5,
-        "outline": 8,
-        "shadow": 3,
+        "font_size_pct": 9.0,   # +1.5 vs anterior
+        "outline": 12,
+        "shadow": 4,
         "position": "bottom_third",
         "weight": 1,
     },
@@ -475,14 +476,17 @@ CAPTION_STYLE_PRESETS = {
 
 
 def _calc_dynamic_font_size(text: str, video_width: int, base_pct: float, video_height: int) -> int:
-    """Reduce el tamaño si el texto es largo para evitar overflow lateral."""
+    """Reduce el tamaño si el texto es largo, pero maximiza para chunks cortos."""
     base = int(video_height * base_pct / 100)
     char_count = max(1, len(text))
-    # Ancho disponible: 78% del video (12% margen cada lado, ~2% buffer)
-    available_w = video_width * 0.78
-    # Heurística: ~0.55 píxel por char en fontes Impact
-    max_size = int(available_w / (char_count * 0.55))
-    return max(60, min(base, max_size))
+    # Ancho disponible: 76% del video (12% margen cada lado)
+    available_w = video_width * 0.76
+    # Factor 0.48 (vs 0.55 anterior) — permite fuentes más grandes antes de reducir
+    max_size = int(available_w / (char_count * 0.48))
+    # Boost extra para chunks muy cortos (≤6 chars): permitir hasta +20% del base
+    if char_count <= 6:
+        max_size = int(max_size * 1.2)
+    return max(72, min(base, max_size))
 
 
 def _split_long_chunk(chunk: list[dict], max_chars: int = 14) -> list[list[dict]]:

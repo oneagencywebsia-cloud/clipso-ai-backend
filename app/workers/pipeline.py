@@ -248,6 +248,7 @@ def process_video_job(
             caption_style = plan_data.get("caption_style") or {}
             caption_emphasis = plan_data.get("caption_emphasis") or []
             motion_graphics_list = plan_data.get("motion_graphics") or []
+            text_overlays = plan_data.get("text_overlays") or [] if apply_text_overlays else []
             grading_style = plan_data.get("color_grading", "neutral") if apply_grading else "neutral"
 
             chunk_starts: list[float] = []
@@ -423,9 +424,11 @@ def process_video_job(
                         "captions_xl": bool(words),
                         "color_grading": grading_style,
                         "zoom_moments": len(zoom_moments),
+                        "motion_graphics": len(motion_graphics_list),
                         "text_overlays": len(text_overlays),
                         "broll_images": len(broll_list),
-                        "sfx_events": len(sfx_events),
+                        "sfx_events": len(all_sfx_events),
+                        "key_moments": len(key_moments),
                         "background_music": bool(music_path)
                     }
                 }
