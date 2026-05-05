@@ -1,9 +1,17 @@
 """Cliente Supabase para persistencia"""
+from __future__ import annotations
+
+import time
 from supabase import create_client, Client
 from loguru import logger
-from typing import Any
+from typing import Any, Literal
 
 from app.core.config import settings
+
+JobStatus = Literal[
+    "queued", "downloading", "transcribing", "analyzing",
+    "planning", "rendering", "uploading", "completed", "failed",
+]
 
 
 class SupabaseClient:
@@ -98,6 +106,53 @@ class SupabaseClient:
             .execute()
         )
         return result.data[0] if result.data else {}
+
+    def update_job_status(
+        self,
+        job_id: str,
+        status: JobStatus,
+        progress: int,
+        timeline_json: dict | None = None,
+        output_url: str | None = None,
+        error_message: str | None = None,
+    ) -> dict:
+        """
+        Actualiza el estado de un job en tiempo real.
+        Supabase Realtime propaga el cambio a todos los clientes suscritos
+        en < 100ms via WebSocket (canal postgres_changes).
+
+        Llamar entre cada paso del pipeline:
+            db.update_job_status(job_id, "transcribing", 22)
+            db.update_job_status(job_id, "completed", 100, timeline_json=tl.model_dump())
+        """
+        payload: dict[str, Any] = {
+            "status":     status,
+            "progress":   max(0, min(100, progress)),
+            "updated_at": "now()",
+        }
+        if timeline_json is not None:
+            payload["timeline_json"] = timeline_json
+        if output_url is not None:
+            payload["output_url"] = output_url
+        if error_message is not None:
+            payload["error_message"] = error_message
+        if status == "completed":
+            payload["completed_at"] = "now()"
+
+        try:
+            result = (
+                self.client.table("clipso_jobs")
+                .update(payload)
+                .eq("id", job_id)
+                .execute()
+            )
+            row = result.data[0] if result.data else {}
+            logger.info(f"Job {job_id} → {status} ({progress}%)")
+            return row
+        except Exception as exc:
+            # No propagamos: el pipeline no debe romperse por un fallo de DB
+            logger.error(f"update_job_status failed for {job_id}: {exc}")
+            return {}
 
     def list_user_jobs(self, user_id: str, limit: int = 50) -> list[dict]:
         result = (

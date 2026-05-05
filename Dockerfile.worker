@@ -7,7 +7,10 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
+    ffmpeg curl ca-certificates \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g tsx \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -17,6 +20,10 @@ RUN pip install -r requirements.txt
 
 COPY app ./app
 COPY assets ./assets
+
+# Montar el repo del app (Remotion) en tiempo de build
+# En docker-compose se usa bind mount: REMOTION_APP_DIR=/app-remotion
+ENV REMOTION_APP_DIR=/app-remotion
 
 # Comando: arranca worker RQ
 CMD rq worker clipso-pipeline --url ${REDIS_URL} --with-scheduler
