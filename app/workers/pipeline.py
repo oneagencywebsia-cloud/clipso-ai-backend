@@ -52,82 +52,107 @@ def _build_auto_sfx_events(
     motion_graphics: list[dict],
     llm_sfx: list[dict],
     duration: float,
-    key_moments: list[dict] | None = None
+    key_moments: list[dict] | None = None,
+    keyword_animations: list[dict] | None = None
 ) -> list[dict]:
-    """Construye lista completa de SFX events (v2 con key_moments):
-    - Click suave automático en cada caption chunk
-    - Whoosh automático en cada zoom punch-in
-    - Pop/sync automático en cada motion graphic (según sfx_sync)
-    - SFX estratégicos del LLM (riser buildup + impact en key_moments)
+    """Construye lista completa de SFX events v4 con keyword_animations:
+    - Click suave automático en cada caption chunk (Submagic style)
+    - Whoosh automático en cada zoom punch-in (calibrado a scale_target)
+    - Pop/sync automático en cada motion graphic (según sfx_sync + importance_score)
+    - SFX estratégicos en key_moments (riser buildup + impact)
+    - SFX por palabra en keyword_animations (requires_sfx=true)
+    - sfx_events tradicionales del LLM como fallback
     """
     events = []
+    used_timestamps: set[float] = set()
 
-    # 1. Auto-clicks en CADA caption chunk (Submagic style — volumen 0.12)
+    def _add(sfx_name: str, ts: float, vol: float, dedup_window: float = 0.15) -> None:
+        """Agrega SFX evitando duplicados en ventana de tiempo."""
+        if not (0 <= ts <= duration):
+            return
+        for used_ts in used_timestamps:
+            if abs(ts - used_ts) < dedup_window:
+                return
+        p = _pick_sfx(sfx_name)
+        if p:
+            events.append({"path": str(p), "timestamp": ts, "volume": vol})
+            used_timestamps.add(ts)
+
+    # 1. Auto-clicks en CADA caption chunk (Submagic style)
     click_path = _pick_sfx("click_soft")
     if click_path:
         for ts in chunk_starts:
             if 0 <= ts <= duration:
                 events.append({"path": str(click_path), "timestamp": ts, "volume": 0.12})
 
-    # 2. Auto-whoosh en cada zoom
+    # 2. Auto-whoosh en zooms — volumen proporcional al scale_target
     whoosh_path = _pick_sfx("whoosh")
+    whoosh_long = _pick_sfx("whoosh_long")
     if whoosh_path:
         for zm in zoom_moments:
             ts = float(zm.get("timestamp", 0))
+            scale_t = float(zm.get("scale_target", 105))
+            # Más zoom → más volumen y whoosh más largo
+            vol = 0.25 + (scale_t - 105) * 0.015  # 105→0.25, 120→0.475
+            vol = max(0.25, min(0.65, vol))
+            sfx_p = whoosh_long if scale_t >= 118 and whoosh_long else whoosh_path
             if 0 <= ts <= duration:
-                events.append({"path": str(whoosh_path), "timestamp": ts, "volume": 0.35})
+                events.append({"path": str(sfx_p), "timestamp": ts, "volume": vol})
 
-    # 3. SFX sincronizado a cada motion graphic
+    # 3. SFX sincronizado a cada motion graphic (importance_score → volumen)
     for mg in motion_graphics:
         sync_type = mg.get("sfx_sync") or "pop"
-        sync_path = _pick_sfx(sync_type)
-        if not sync_path:
-            sync_path = _pick_sfx("pop")
+        importance = float(mg.get("importance_score", 0.7))
+        vol = 0.30 + importance * 0.20  # 0.7→0.44, 0.9→0.48, 1.0→0.50
+        sync_path = _pick_sfx(sync_type) or _pick_sfx("pop")
         if sync_path:
             ts = float(mg.get("timestamp", 0))
             if 0 <= ts <= duration:
-                events.append({"path": str(sync_path), "timestamp": ts, "volume": 0.4})
+                events.append({"path": str(sync_path), "timestamp": ts, "volume": vol})
 
-    # 4. SFX estratégicos del LLM v2 (key_moments con riser buildup + impact)
+    # 4. SFX en keyword_animations donde requires_sfx=true
+    for kw in (keyword_animations or []):
+        if not kw.get("requires_sfx"):
+            continue
+        sfx_type = kw.get("sfx_type", "pop")
+        importance = float(kw.get("importance_score", 0.7))
+        vol = 0.25 + importance * 0.20
+        ts = float(kw.get("timestamp", -1))
+        if ts >= 0:
+            _add(sfx_type, ts, vol)
+
+    # 5. SFX estratégicos del LLM v4 (key_moments con riser + impact)
     if key_moments:
         for moment in key_moments:
             ts = float(moment.get("timestamp", 0))
             if 0 <= ts <= duration:
-                # Riser buildup (lead_time segundos antes)
                 lead_time = float(moment.get("lead_time", 0))
                 sfx_buildup = moment.get("sfx_buildup")
                 if sfx_buildup and lead_time > 0:
                     riser_path = _pick_sfx(sfx_buildup)
+                    riser_ts = max(0.0, ts - lead_time)
                     if riser_path:
-                        events.append({
-                            "path": str(riser_path),
-                            "timestamp": ts - lead_time,
-                            "volume": 0.55,
-                            "reason": f"buildup para {moment.get('type')}"
-                        })
+                        events.append({"path": str(riser_path), "timestamp": riser_ts, "volume": 0.55})
 
-                # Impact exacto en el momento
                 sfx_impact = moment.get("sfx_impact")
+                importance = float(moment.get("importance_score", 0.8))
+                impact_vol = 0.50 + importance * 0.20
                 if sfx_impact:
                     impact_path = _pick_sfx(sfx_impact)
                     if impact_path:
-                        events.append({
-                            "path": str(impact_path),
-                            "timestamp": ts,
-                            "volume": 0.60,
-                            "reason": f"{moment.get('type')} impact"
-                        })
-    else:
-        # Fallback: procesar sfx_events tradicionales (si no hay key_moments)
-        for ev in llm_sfx:
-            sfx_type = ev.get("type", "pop")
-            sfx_path = _pick_sfx(sfx_type)
-            if sfx_path:
-                ts = float(ev.get("timestamp", 0))
-                if 0 <= ts <= duration:
-                    volume = float(ev.get("volume", 0.5))
-                    events.append({"path": str(sfx_path), "timestamp": ts, "volume": volume})
+                        events.append({"path": str(impact_path), "timestamp": ts, "volume": impact_vol})
 
+    # 6. sfx_events del LLM (siempre se aplican, no son exclusivos)
+    for ev in llm_sfx:
+        sfx_type = ev.get("type", "pop")
+        sfx_path = _pick_sfx(sfx_type)
+        if sfx_path:
+            ts = float(ev.get("timestamp", 0))
+            if 0 <= ts <= duration:
+                events.append({"path": str(sfx_path), "timestamp": ts, "volume": float(ev.get("volume", 0.5))})
+
+    # Ordenar por timestamp
+    events.sort(key=lambda e: e["timestamp"])
     return events
 
 
@@ -398,13 +423,15 @@ def process_video_job(
             duration_now = video.get_video_info(stage).get("duration", 0)
             key_moments = key_moments_raw if apply_sfx else []
             llm_sfx = plan_data.get("sfx_events", []) if apply_sfx else []
+            keyword_animations = plan_data.get("keyword_animations", []) if apply_sfx else []
             all_sfx_events = _build_auto_sfx_events(
                 chunk_starts=chunk_starts,
                 zoom_moments=zoom_moments,
                 motion_graphics=motion_graphics_list,
                 llm_sfx=llm_sfx,
                 duration=duration_now,
-                key_moments=key_moments
+                key_moments=key_moments,
+                keyword_animations=keyword_animations
             )
             if all_sfx_events:
                 try:

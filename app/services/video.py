@@ -613,7 +613,57 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for c in raw_chunks:
         chunks.extend(_split_long_chunk(c, max_chars=14))
 
-    # Paso 3: generar eventos ASS con tamaño dinámico + animación scale-in
+    # ── Spring physics helpers (ASS keyframes) ──────────────────────────────
+    def _spring_anim(strength: str = "subtle") -> str:
+        """Simula resorte underdamped con keyframes \t().
+        subtle: entra rápido, rebote mínimo → para texto fluido de lectura
+        medium: overshoot 115%, undershoot 88% → para keywords
+        strong: overshoot 125%, undershoot 82% → para énfasis/punchlines
+        """
+        configs = {
+            "subtle": "\\fscx72\\fscy72\\t(0,130,\\fscx104\\fscy104)\\t(130,190,\\fscx98\\fscy98)\\t(190,240,\\fscx100\\fscy100)",
+            "medium": "\\fscx50\\fscy50\\t(0,160,\\fscx118\\fscy118)\\t(160,230,\\fscx90\\fscy90)\\t(230,290,\\fscx106\\fscy106)\\t(290,350,\\fscx98\\fscy98)\\t(350,400,\\fscx100\\fscy100)",
+            "strong": "\\fscx30\\fscy30\\t(0,150,\\fscx128\\fscy128)\\t(150,220,\\fscx82\\fscy82)\\t(220,280,\\fscx112\\fscy112)\\t(280,340,\\fscx94\\fscy94)\\t(340,390,\\fscx102\\fscy102)\\t(390,440,\\fscx100\\fscy100)",
+        }
+        return configs.get(strength, configs["subtle"])
+
+    def _rotation_tag(importance: float) -> str:
+        """Rotación de entrada (z-axis) proporcional a importance_score.
+        Solo en palabras de alto impacto: -2.5° → 0° durante 250ms.
+        """
+        if importance >= 0.82:
+            deg = -2.5 + (importance - 0.82) * 13.9  # [-2.5°, 0°] para [0.82, 1.0]
+            return f"\\frz{deg:.2f}\\t(0,250,\\frz0)"
+        return ""
+
+    def _anim_for_style(anim_style: str, importance: float, size: int, color_tag: str = "") -> str:
+        """Retorna la animación ASS correcta según animation_style del schema."""
+        rot = _rotation_tag(importance)
+        if anim_style == "shake":
+            # Shake horizontal: simula impacto físico
+            return (
+                f"\\fad(40,60)"
+                f"\\fscx100\\fscy100"
+                f"\\t(0,60,\\shad6)\\t(60,110,\\shad2)\\t(110,160,\\shad5)\\t(160,200,\\shad2)\\t(200,250,\\shad0)"
+                f"{color_tag}\\fs{size}"
+            )
+        elif anim_style == "highlight":
+            # Pulse de color + scale moderado
+            return (
+                f"\\fad(60,80)"
+                f"\\fscx85\\fscy85\\t(0,180,\\fscx108\\fscy108)\\t(180,280,\\fscx100\\fscy100)"
+                f"\\t(280,{max(350,size)},\\fscx103\\fscy103)\\t({max(350,size)},{max(450,size)},\\fscx100\\fscy100)"
+                f"{color_tag}\\fs{size}"
+            )
+        elif anim_style == "bounce":
+            spring = _spring_anim("medium" if importance >= 0.7 else "subtle")
+            return f"\\fad(60,60){spring}{rot}{color_tag}\\fs{size}"
+        else:
+            # default: spring subtle para texto fluido de lectura
+            spring = _spring_anim("subtle")
+            return f"\\fad(70,40){spring}\\fs{size}"
+
+    # ── Generar eventos ASS con kinetic typography ────────────────────────────
     events = []
     chunk_starts: list[float] = []
     for c in chunks:
@@ -624,7 +674,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         chunk_starts.append(start)
         em = find_emphasis(start)
 
-        # Construir línea con keywords destacados
+        # importance_score del chunk (promedio de palabras si viene del LLM)
+        chunk_importance = max(
+            (float(w.get("importance_score", 0.5)) for w in c),
+            default=0.5
+        )
+        chunk_anim_style = next(
+            (w.get("animation_style") for w in c if w.get("animation_style")),
+            None
+        )
+
+        # Construir línea con keywords destacados + animation_style por palabra
         parts = []
         full_text_chars = []
         for w in c:
@@ -632,7 +692,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             word_clean = word_text.strip(".,;:!?¿¡()[]\"'")
             word_escaped = word_text.replace("{", "(").replace("}", ")").replace(",", "")
             full_text_chars.append(word_text)
+
+            w_importance = float(w.get("importance_score", 0.5))
+            w_anim = w.get("animation_style", "")
+
             if word_clean in keywords_set:
+                # Keyword: color highlight + rotation si importance alta
+                rot = _rotation_tag(w_importance)
+                if rot:
+                    parts.append(f"{{\\c{highlight_color}{rot}}}{word_escaped}{{\\c{base_color}\\frz0}}")
+                else:
+                    parts.append(f"{{\\c{highlight_color}}}{word_escaped}{{\\c{base_color}}}")
+            elif w_importance >= 0.82 and w_anim in ("shake", "bounce", "highlight"):
+                # Palabra importante con animation_style propio
                 parts.append(f"{{\\c{highlight_color}}}{word_escaped}{{\\c{base_color}}}")
             else:
                 parts.append(word_escaped)
@@ -640,38 +712,25 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         line_text = " ".join(full_text_chars)
         line = " ".join(parts)
 
-        # Tamaño dinámico según longitud
         dynamic_size = _calc_dynamic_font_size(line_text, video_width, base_font_pct, video_height)
 
-        # Scale-in pop animation: empieza al 80% y crece a 100% en 150ms
-        anim = (
-            f"\\fad(80,40)"
-            f"\\fscx80\\fscy80"
-            f"\\t(0,150,\\fscx100\\fscy100)"
-            f"\\fs{dynamic_size}"
-        )
-
         if em:
+            # ── MODO ÉNFASIS: spring fuerte + rotation + color saturado ─────
             em_color = _hex_to_ass_bgr(_ensure_high_contrast(
-                em.get("color", highlight_color_hex),
-                "#FFFF00"
+                em.get("color", highlight_color_hex), "#FFFF00"
             ))
-            # Usa emphasis_size_pct del preset si no viene del LLM — garantiza salto visual grande
             default_em_pct = float(preset.get("emphasis_size_pct", base_font_pct + 3.0))
             em_size_pct = float(em.get("size_pct", default_em_pct))
             em_size = _calc_dynamic_font_size(line_text, video_width, em_size_pct, video_height)
-            em_align, em_margin_pct = _position_to_alignment("bottom_third")  # forzar bottom_third siempre
-            anim = (
-                f"\\fad(120,80)"
-                f"\\fscx60\\fscy60"
-                f"\\t(0,180,\\fscx110\\fscy110)"
-                f"\\t(180,260,\\fscx98\\fscy98)"
-                f"\\t(260,320,\\fscx102\\fscy102)"
-                f"\\t(320,380,\\fscx100\\fscy100)"
-                f"\\c{em_color}"
-                f"\\fs{em_size}"
-                f"\\an{em_align}"
-            )
+            em_importance = float(em.get("importance_score", chunk_importance))
+            em_anim_style = em.get("animation_style", "bounce")
+            em_align, _ = _position_to_alignment("bottom_third")
+
+            anim = _anim_for_style(em_anim_style, em_importance, em_size, f"\\c{em_color}") + f"\\an{em_align}"
+        else:
+            # ── MODO NORMAL: spring según importancia del chunk ───────────────
+            anim_style = chunk_anim_style or ("bounce" if chunk_importance >= 0.7 else "default")
+            anim = _anim_for_style(anim_style, chunk_importance, dynamic_size)
 
         line = "{" + anim + "}" + line
         events.append(f"Dialogue: 0,{fmt_time(start)},{fmt_time(end)},Base,,0,0,0,,{line}")
@@ -775,8 +834,9 @@ def add_zoom_punch_in(
         shutil.copy(str(video_path), str(output_path))
         return output_path
 
-    # Zoom más dramático: subtle=1.05, medium=1.09, strong=1.14
-    intensity_map = {"subtle": 1.05, "medium": 1.09, "strong": 1.14}
+    # Mapeo intensity → scale_factor. También acepta scale_target numérico del nuevo schema.
+    # scale_target=118 → zoom 18% → scale_factor=1.18
+    intensity_map = {"subtle": 1.05, "medium": 1.09, "strong": 1.14, "very_strong": 1.20}
 
     probe = ffmpeg.probe(str(video_path))
     vstream = next(s for s in probe["streams"] if s["codec_type"] == "video")
@@ -787,7 +847,12 @@ def add_zoom_punch_in(
     parts = []
     for m in zoom_moments[:8]:
         ts = float(m.get("timestamp", 0))
-        zoom = intensity_map.get(m.get("intensity", "subtle"), 1.05)
+        # scale_target (nuevo schema) tiene prioridad sobre intensity (legacy)
+        scale_target = m.get("scale_target")
+        if scale_target:
+            zoom = max(1.02, min(1.25, float(scale_target) / 100.0))
+        else:
+            zoom = intensity_map.get(m.get("intensity", "subtle"), 1.05)
         # Easing suave: in 0.25s, hold 0.7s, out 0.25s — más punch en la entrada
         parts.append(
             f"if(between(t\\,{ts}\\,{ts+0.25})\\,1+({zoom-1})*(t-{ts})/0.25\\,"

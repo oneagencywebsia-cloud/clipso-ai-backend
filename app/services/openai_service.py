@@ -203,11 +203,13 @@ JSON con esta estructura:
 
   "motion_graphics": [
     {{
-      "type": "title_card | text_pop | lower_third | counter | call_out | zoom_shake_text",
+      "type": "title_card | text_pop | lower_third | counter | call_out | zoom_shake_text | highlight_box | arrow_pointer | progress_bar | glitch_transition",
       "timestamp": 3.0,
       "duration": 2.0,
       "params": {{"text": "TEXTO CORTO", "color": "#FFFF00", "size_pct": 8}},
       "sfx_sync": "pop | impact_high | impact_low | ding",
+      "animation_style": "bounce | shake | highlight",
+      "importance_score": 0.85,
       "reason": "..."
     }}
   ],
@@ -218,15 +220,33 @@ JSON con esta estructura:
       "duration": 1.0,
       "color": "#FF3333",
       "size_pct": 11,
-      "position": "center",
+      "position": "bottom_third",
+      "animation_style": "bounce | shake | highlight",
+      "importance_score": 0.90,
       "reason": "punto culminante del mensaje"
     }}
   ],
 
   "highlight_keywords": ["palabras", "CLAVE", "del", "texto"],
 
+  "keyword_animations": [
+    {{
+      "word": "CLAVE",
+      "importance_score": 0.92,
+      "requires_sfx": true,
+      "sfx_type": "pop | swoosh | impact",
+      "animation_style": "bounce | shake | highlight",
+      "note": "Palabras específicas de la transcripción con su tratamiento visual"
+    }}
+  ],
+
   "zoom_moments": [
-    {{"timestamp": 1.5, "intensity": "subtle | medium | strong", "reason": "..."}}
+    {{
+      "timestamp": 1.5,
+      "intensity": "subtle | medium | strong",
+      "scale_target": 118,
+      "reason": "..."
+    }}
   ],
 
   "text_overlays": [
@@ -234,7 +254,10 @@ JSON con esta estructura:
       "timestamp": 5.2,
       "duration": 1.5,
       "text": "TEXTO 1-3 PALABRAS MAYÚSCULAS",
-      "position": "top | center | bottom",
+      "position": "top | bottom",
+      "color": "#FFFF00",
+      "animation_style": "bounce | shake | highlight",
+      "importance_score": 0.80,
       "reason": "..."
     }}
   ],
@@ -244,7 +267,7 @@ JSON con esta estructura:
       "timestamp": 10.0,
       "duration": 3.0,
       "description": "...",
-      "dalle_prompt": "prompt en inglés DALL-E 3",
+      "dalle_prompt": "prompt en inglés DALL-E 3, ultra detallado",
       "reason": "..."
     }}
   ],
@@ -254,6 +277,7 @@ JSON con esta estructura:
       "timestamp": 0.1,
       "type": "whoosh | whoosh_long | pop | ding | riser_short | riser_long | impact_low | impact_high | swoosh | boom | notification",
       "volume": 0.5,
+      "trigger": "zoom | motion_graphic | emphasis | manual",
       "reason": "..."
     }}
   ],
@@ -263,11 +287,32 @@ JSON con esta estructura:
   "ambient_track": "tiktok_ambient_beat | cinematic_drone | asmr_room_tone | synth_pad_ethereal | subtle_pulse | none"
 }}
 
-⚡ REGLAS ULTRA-AGRESIVAS v3 (OBLIGATORIAS — CERO EXCEPCIONES):
+⚡ REGLAS DE KINETIC TYPOGRAPHY v4 (MOTOR DE FÍSICA — OBLIGATORIAS):
 
-╔══════════════════════════════════════════════════════╗
-║ MENTALIDAD: CADA SEGUNDO ES UNA BATALLA POR EL SCROLL ║
-╚══════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════╗
+║ MENTALIDAD: FÍSICA REAL. CADA PALABRA TIENE PESO Y ENERGÍA  ║
+╚══════════════════════════════════════════════════════════════╝
+
+0. NUEVO — ANIMATION_STYLE Y IMPORTANCE_SCORE (CRÍTICO):
+   - Cada caption_emphasis DEBE incluir animation_style + importance_score
+   - Cada motion_graphic DEBE incluir animation_style + importance_score
+   - Cada text_overlay DEBE incluir animation_style + importance_score
+   - keyword_animations: identifica las 5-8 palabras más impactantes de la transcripción
+     con su importance_score (0.0-1.0), sfx_type y animation_style
+   - REGLAS de animation_style:
+     * "bounce" → entrada spring con overshoot — para revelaciones, datos, hooks
+     * "shake" → vibración horizontal decreciente — para impacto, punchlines, CTAs agresivos
+     * "highlight" → pulse de color + scale moderado — para énfasis informativo, datos
+
+0b. IMPORTANCE_SCORE — Cómo calibrarlo:
+   - 0.9-1.0: punchline final, revelación que cambia todo, CTA único
+   - 0.75-0.89: dato numérico, nombre clave, giro de argumento
+   - 0.60-0.74: transición importante, contexto clave
+   - < 0.60: información de relleno (no necesita animation_style especial)
+
+0c. ZOOM SCALE_TARGET — Ya no uses "intensity", usa números reales:
+   - scale_target: 105 = sutil (zoom 5%), 112 = medio, 118 = fuerte, 124 = muy fuerte
+   - Alinea el scale_target con el importance_score del momento
 
 1. KEY_MOMENTS — DENSIDAD MÁXIMA:
    - Vídeo < 10s: MÍNIMO 2 key_moments
@@ -283,24 +328,26 @@ JSON con esta estructura:
    - Vídeo > 15s: MÍNIMO 3 motion graphics
    - Vídeo > 25s: MÍNIMO 4 motion graphics
    - Vídeo > 40s: MÍNIMO 5-6 motion graphics
-   - SIEMPRE title_card en los primeros 3s si hay concepto fuerte
-   - SIEMPRE zoom_shake_text en el punchline más potente
+   - SIEMPRE title_card (importance_score≥0.8, animation_style=bounce) en primeros 3s
+   - SIEMPRE zoom_shake_text (importance_score≥0.9, animation_style=shake) en el punchline
    - SIEMPRE lower_third si hay nombre/lugar que presentar
    - counter SI hay número/estadística — hazlo GRANDE
 
-4. SFX EVENTS — BOMBARDEO SÓNICO:
+4. SFX EVENTS — BOMBARDEO SÓNICO SINCRONIZADO:
    - OBLIGATORIO: boom/whoosh_long en el primer segundo
    - CADA key_moment = riser_buildup + impact en el instante exacto (SIN FALLAR)
    - MÍNIMO 1 SFX cada 4-5 segundos en todo el vídeo
    - Datos/estadísticas → ding + impact
    - CTAs → boom + notification
+   - keyword_animations con requires_sfx=true → el sistema lo aplica automáticamente
    - click_soft: AUTOMÁTICO en captions (no listar aquí)
 
-5. ZOOM PUNCH-INS:
+5. ZOOM PUNCH-INS (con scale_target):
    - SIEMPRE apply_zoom_punch_in=true (sin excepciones)
    - Mínimo 1 zoom cada 8 segundos
-   - PRIMER ZOOM en primeros 3s (hook inmediato)
-   - intense=strong en revelaciones y punchlines (NO subtle en esos momentos)
+   - PRIMER ZOOM en primeros 3s (hook inmediato): scale_target=112
+   - Revelaciones/punchlines: scale_target=118-124
+   - Zooms normales: scale_target=105-110
 
 6. MÚSICA + AMBIENT — SIEMPRE PRESENTE:
    - ambient_track: JAMÁS "none". Si hay voz → subtle_pulse por defecto como mínimo
