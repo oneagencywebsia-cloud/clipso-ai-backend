@@ -277,18 +277,51 @@ def process_video_job(
                 stage = graded_path
             update_progress(job_id, 78)
 
-            # Paso 9: Zoom punch-in (78% → 81%)
+            # === ENFORCEMENT LAYER — Garantiza mínimos aunque el LLM devuelva vacío ===
+            duration_video = video.get_video_info(source_video).get("duration", 0)
+            key_moments_raw = plan_data.get("key_moments", [])
+
             zoom_moments = plan_data.get("zoom_moments", []) if apply_zoom else []
+            if apply_zoom and not zoom_moments:
+                # Auto-generar zooms en key_moments si el LLM no devolvió zoom_moments
+                if key_moments_raw:
+                    zoom_moments = [
+                        {"timestamp": float(km.get("timestamp", 0)), "intensity": "medium"}
+                        for km in key_moments_raw[:6]
+                    ]
+                else:
+                    # Fallback: 1 zoom cada 8s
+                    zoom_moments = [
+                        {"timestamp": t, "intensity": "subtle"}
+                        for t in range(2, int(duration_video), 8)
+                    ]
+                logger.info(f"Enforcement: auto-generados {len(zoom_moments)} zoom_moments")
+
+            if not motion_graphics_list and duration_video > 5:
+                # Auto-generar motion graphics mínimos si el LLM devolvió lista vacía
+                auto_mg = [{"type": "title_card", "timestamp": 0.5, "duration": 2.0,
+                             "params": {"text": plan_data.get("summary", "")[:30] or "WATCH THIS", "color": "#FFFF00", "size_pct": 9}, "sfx_sync": "pop"}]
+                if key_moments_raw:
+                    for km in key_moments_raw[:3]:
+                        ts = float(km.get("timestamp", 5))
+                        t = km.get("text") or km.get("type") or "WOW"
+                        auto_mg.append({"type": "zoom_shake_text", "timestamp": ts, "duration": 1.5,
+                                        "params": {"text": str(t)[:20].upper(), "color": "#FF3333", "size_pct": 10}, "sfx_sync": "impact_high"})
+                motion_graphics_list = auto_mg
+                logger.info(f"Enforcement: auto-generados {len(motion_graphics_list)} motion graphics")
+
+            # Paso 9: Zoom punch-in (78% → 81%)
             if apply_zoom and zoom_moments:
                 try:
                     zoomed_path = workdir / "zoomed.mp4"
                     video.add_zoom_punch_in(stage, zoomed_path, zoom_moments=zoom_moments)
                     stage = zoomed_path
+                    logger.info(f"Zooms aplicados: {len(zoom_moments)}")
                 except Exception as e:
                     logger.warning(f"zoom falló: {e}")
             update_progress(job_id, 81)
 
-            # Paso 10: Motion graphics (todas en 1 encode) (81% → 85%)
+            # Paso 10: Motion graphics (todas en 1 encode) (81% → 84%)
             if motion_graphics_list:
                 try:
                     mg_ass = workdir / "motion_graphics.ass"
@@ -308,10 +341,34 @@ def process_video_job(
                         str(mg_path)
                     ], capture_output=True, check=True)
                     stage = mg_path
-                    logger.info(f"Motion graphics: {len(motion_graphics_list)} aplicadas")
+                    logger.info(f"Motion graphics aplicadas: {len(motion_graphics_list)}")
                 except Exception as e:
                     logger.warning(f"motion graphics falló: {e}")
-            update_progress(job_id, 85)
+            update_progress(job_id, 84)
+
+            # Paso 10b: Text overlays del LLM (84% → 86%) — SIEMPRE aplicados si existen
+            if text_overlays:
+                try:
+                    ov_ass = workdir / "text_overlays.ass"
+                    video.generate_text_overlays_ass(
+                        text_overlays, ov_ass, video_width=v_w, video_height=v_h
+                    )
+                    ov_path = workdir / "with_overlays.mp4"
+                    ov_ass_escaped = str(ov_ass).replace("\\", "/").replace(":", "\\:")
+                    import subprocess as _sp2
+                    _sp2.run([
+                        "ffmpeg", "-y", "-i", str(stage),
+                        "-vf", f"ass='{ov_ass_escaped}'",
+                        "-map", "0:v:0", "-map", "0:a?",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
+                        "-c:a", "copy",
+                        str(ov_path)
+                    ], capture_output=True, check=True)
+                    stage = ov_path
+                    logger.info(f"Text overlays aplicados: {len(text_overlays)}")
+                except Exception as e:
+                    logger.warning(f"text overlays falló: {e}")
+            update_progress(job_id, 86)
 
             # Paso 11: B-roll DALL-E SI el LLM lo decidió (86% → 90%)
             broll_list = plan_data.get("broll", []) if apply_broll else []
@@ -339,7 +396,7 @@ def process_video_job(
             # Auto: clicks en CADA caption + whoosh en zooms + pop en motion graphics
             # LLM v2: riser buildup + impact en key_moments
             duration_now = video.get_video_info(stage).get("duration", 0)
-            key_moments = plan_data.get("key_moments", []) if apply_sfx else []
+            key_moments = key_moments_raw if apply_sfx else []
             llm_sfx = plan_data.get("sfx_events", []) if apply_sfx else []
             all_sfx_events = _build_auto_sfx_events(
                 chunk_starts=chunk_starts,

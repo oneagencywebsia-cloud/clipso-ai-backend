@@ -380,97 +380,109 @@ def _ensure_high_contrast(hex_color: str, fallback: str = "#FFFF00") -> str:
 
 
 def _position_to_alignment(position: str) -> tuple[int, float]:
-    """Devuelve (Alignment ASS, marginV_pct desde el borde correspondiente)"""
+    """Devuelve (Alignment ASS, marginV_pct desde el borde correspondiente).
+    'center' se descarta para captions — siempre bottom_third para legibilidad.
+    """
     p = (position or "bottom_third").lower()
     if p == "top":
         return 8, 0.10
     if p == "center":
-        return 5, 0.0
+        # Redirigir center a bottom_third (captions al medio son ilegibles)
+        return 2, 0.22
     if p == "bottom":
-        return 2, 0.08
-    # bottom_third (default)
+        return 2, 0.06
+    # bottom_third (default) — posición ideal estilo TikTok/Reels
     return 2, 0.22
 
 
-# Presets de estilos de captions (catálogo que el LLM elige)
-# Todos aumentados al máximo: tamaños +20%, outlines más gruesos, sombras más profundas
+# Presets de estilos de captions.
+# font_size_pct es el TAMAÑO BASE (captions normales).
+# Los caption_emphasis del LLM añaden tamaño extra (+2-3%) solo en momentos clave.
+# Así: normal=legible y limpio, énfasis=grande y explosivo, no todo igual.
 CAPTION_STYLE_PRESETS = {
     "tiktok_yellow": {
         "fontname": "Impact",
         "base_color": "#FFFFFF",
         "highlight_color": "#FFFF00",
         "outline_color": "#000000",
-        "font_size_pct": 8.5,   # +1.5 vs anterior
-        "outline": 12,           # outline ultra-grueso
-        "shadow": 4,
+        "font_size_pct": 6.5,   # base moderado — énfasis sube a ~9-10%
+        "outline": 10,
+        "shadow": 3,
         "position": "bottom_third",
         "weight": 1,
+        "emphasis_size_pct": 9.5,  # tamaño en momentos de énfasis
     },
     "mrbeast_bold": {
         "fontname": "Arial Black",
         "base_color": "#FFFFFF",
         "highlight_color": "#FF2222",
         "outline_color": "#000000",
-        "font_size_pct": 9.5,   # +1.5 vs anterior — MAXIMO IMPACTO
-        "outline": 14,
+        "font_size_pct": 7.0,   # base moderado-grande (estilo MrBeast clásico)
+        "outline": 12,
         "shadow": 4,
         "position": "bottom_third",
         "weight": 1,
+        "emphasis_size_pct": 10.0,
     },
     "minimal_clean": {
         "fontname": "Arial",
         "base_color": "#FFFFFF",
         "highlight_color": "#00FFFF",
         "outline_color": "#111111",
-        "font_size_pct": 7.0,   # +1.5 vs anterior
-        "outline": 6,
+        "font_size_pct": 5.5,   # minimalista — énfasis más discreto
+        "outline": 5,
         "shadow": 2,
         "position": "bottom_third",
         "weight": 1,
+        "emphasis_size_pct": 7.5,
     },
     "neon_cyber": {
         "fontname": "Impact",
         "base_color": "#00FFFF",
         "highlight_color": "#FF00FF",
         "outline_color": "#000000",
-        "font_size_pct": 8.5,   # +1.5 vs anterior
-        "outline": 10,
-        "shadow": 6,            # sombra grande para efecto glow
+        "font_size_pct": 6.5,
+        "outline": 9,
+        "shadow": 5,
         "position": "bottom_third",
         "weight": 1,
+        "emphasis_size_pct": 9.0,
     },
     "comic_pop": {
         "fontname": "Impact",
         "base_color": "#FFFFFF",
         "highlight_color": "#FFD700",
         "outline_color": "#CC0000",
-        "font_size_pct": 9.0,   # +1.5 vs anterior
-        "outline": 12,
+        "font_size_pct": 7.0,
+        "outline": 10,
         "shadow": 3,
         "position": "bottom_third",
         "weight": 1,
+        "emphasis_size_pct": 10.0,
     },
     "elegant_serif": {
         "fontname": "Georgia",
         "base_color": "#F5F5F5",
         "highlight_color": "#D4AF37",
         "outline_color": "#111111",
-        "font_size_pct": 7.5,   # +1.5 vs anterior
-        "outline": 5,
-        "shadow": 3,
+        "font_size_pct": 5.5,
+        "outline": 4,
+        "shadow": 2,
         "position": "bottom_third",
         "weight": 0,
+        "emphasis_size_pct": 7.5,
     },
     "energetic_orange": {
         "fontname": "Impact",
         "base_color": "#FFFFFF",
         "highlight_color": "#FF6B00",
         "outline_color": "#000000",
-        "font_size_pct": 9.0,   # +1.5 vs anterior
-        "outline": 12,
+        "font_size_pct": 6.5,
+        "outline": 10,
         "shadow": 4,
         "position": "bottom_third",
         "weight": 1,
+        "emphasis_size_pct": 9.5,
     },
 }
 
@@ -644,14 +656,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 em.get("color", highlight_color_hex),
                 "#FFFF00"
             ))
-            em_size_pct = float(em.get("size_pct", base_font_pct + 2))
+            # Usa emphasis_size_pct del preset si no viene del LLM — garantiza salto visual grande
+            default_em_pct = float(preset.get("emphasis_size_pct", base_font_pct + 3.0))
+            em_size_pct = float(em.get("size_pct", default_em_pct))
             em_size = _calc_dynamic_font_size(line_text, video_width, em_size_pct, video_height)
-            em_align, em_margin_pct = _position_to_alignment(em.get("position", position))
+            em_align, em_margin_pct = _position_to_alignment("bottom_third")  # forzar bottom_third siempre
             anim = (
                 f"\\fad(120,80)"
-                f"\\fscx70\\fscy70"
-                f"\\t(0,200,\\fscx105\\fscy105)"
-                f"\\t(200,250,\\fscx100\\fscy100)"
+                f"\\fscx60\\fscy60"
+                f"\\t(0,180,\\fscx110\\fscy110)"
+                f"\\t(180,260,\\fscx98\\fscy98)"
+                f"\\t(260,320,\\fscx102\\fscy102)"
+                f"\\t(320,380,\\fscx100\\fscy100)"
                 f"\\c{em_color}"
                 f"\\fs{em_size}"
                 f"\\an{em_align}"
@@ -666,6 +682,80 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         f"{len(emphasis)} emphasis, {len(keywords_set)} keywords, font={fontname}"
     )
     return output_path, chunk_starts
+
+
+def generate_text_overlays_ass(
+    text_overlays: list[dict],
+    output_path: str | Path,
+    video_width: int = 1080,
+    video_height: int = 1920
+) -> Path:
+    """Genera archivo ASS para text_overlays del LLM.
+
+    Cada overlay: {timestamp, duration, text, position, color}
+    Estilo: texto impactante 1-3 palabras en MAYÚSCULAS con scale-in explosivo.
+    """
+    output_path = Path(output_path)
+
+    header = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {video_width}
+PlayResY: {video_height}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Overlay,Impact,140,&H00FFFFFF&,&H00FFFFFF&,&H00000000&,&H80000000&,1,0,0,0,100,100,0,0,1,14,5,5,80,80,80,1
+Style: OverlayTop,Impact,130,&H00FFFF00&,&H00FFFF00&,&H00000000&,&H80000000&,1,0,0,0,100,100,0,0,1,12,4,8,80,80,80,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+    def fmt_t(s: float) -> str:
+        h = int(s // 3600)
+        m = int((s % 3600) // 60)
+        sec = s % 60
+        return f"{h}:{m:02d}:{sec:05.2f}"
+
+    events = []
+    pos_map = {"top": ("OverlayTop", 8, 80), "center": ("Overlay", 5, 0), "bottom": ("Overlay", 2, 120)}
+
+    for ov in text_overlays:
+        ts = float(ov.get("timestamp", 0))
+        dur = float(ov.get("duration", 1.5))
+        raw_text = str(ov.get("text", "")).upper().replace("{", "(").replace("}", ")").replace(",", "")
+        pos = (ov.get("position") or "top").lower()
+
+        style_name, align, margin_v = pos_map.get(pos, ("OverlayTop", 8, 80))
+
+        # Color custom si viene del LLM
+        color_hex = ov.get("color", "#FFFF00")
+        h = (color_hex or "#FFFF00").lstrip("#").upper()
+        if len(h) == 6:
+            ass_color = f"&H00{h[4:6]}{h[2:4]}{h[0:2]}&"
+        else:
+            ass_color = "&H00FFFF00&"
+
+        # Animación explosiva scale-in con bounce
+        anim = (
+            f"\\fad(80,150)"
+            f"\\fscx40\\fscy40"
+            f"\\t(0,200,\\fscx115\\fscy115)"
+            f"\\t(200,280,\\fscx92\\fscy92)"
+            f"\\t(280,350,\\fscx105\\fscy105)"
+            f"\\t(350,420,\\fscx100\\fscy100)"
+            f"\\c{ass_color}\\an{align}"
+        )
+
+        events.append(
+            f"Dialogue: 2,{fmt_t(ts)},{fmt_t(ts+dur)},{style_name},,0,0,{margin_v},,{{{anim}}}{raw_text}"
+        )
+
+    output_path.write_text(header + "\n".join(events) + "\n", encoding="utf-8")
+    logger.info(f"Text overlays ASS: {len(events)} overlays generados")
+    return output_path
 
 
 def add_zoom_punch_in(
@@ -685,23 +775,24 @@ def add_zoom_punch_in(
         shutil.copy(str(video_path), str(output_path))
         return output_path
 
-    intensity_map = {"subtle": 1.04, "medium": 1.07, "strong": 1.10}
+    # Zoom más dramático: subtle=1.05, medium=1.09, strong=1.14
+    intensity_map = {"subtle": 1.05, "medium": 1.09, "strong": 1.14}
 
     probe = ffmpeg.probe(str(video_path))
     vstream = next(s for s in probe["streams"] if s["codec_type"] == "video")
     src_w = int(vstream["width"])
     src_h = int(vstream["height"])
 
-    # Construir expresión de zoom continua: max de todas las ventanas
+    # Construir expresión de zoom continua: max de todas las ventanas (hasta 8 zooms)
     parts = []
-    for m in zoom_moments[:3]:
+    for m in zoom_moments[:8]:
         ts = float(m.get("timestamp", 0))
-        zoom = intensity_map.get(m.get("intensity", "subtle"), 1.04)
-        # Easing: in 0.3s, hold 0.6s, out 0.3s
+        zoom = intensity_map.get(m.get("intensity", "subtle"), 1.05)
+        # Easing suave: in 0.25s, hold 0.7s, out 0.25s — más punch en la entrada
         parts.append(
-            f"if(between(t\\,{ts}\\,{ts+0.3})\\,1+({zoom-1})*(t-{ts})/0.3\\,"
-            f"if(between(t\\,{ts+0.3}\\,{ts+0.9})\\,{zoom}\\,"
-            f"if(between(t\\,{ts+0.9}\\,{ts+1.2})\\,{zoom}-({zoom-1})*(t-{ts+0.9})/0.3\\,1)))"
+            f"if(between(t\\,{ts}\\,{ts+0.25})\\,1+({zoom-1})*(t-{ts})/0.25\\,"
+            f"if(between(t\\,{ts+0.25}\\,{ts+0.95})\\,{zoom}\\,"
+            f"if(between(t\\,{ts+0.95}\\,{ts+1.2})\\,{zoom}-({zoom-1})*(t-{ts+0.95})/0.25\\,1)))"
         )
 
     z = parts[0]
